@@ -1,0 +1,28 @@
+{
+  "name": "@qinshower/bore-linux-arm-musleabi",
+  "version": "0.0.1",
+  "description": "Deprecated Linux arm musl EABI Bore wrapper for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm"
+  ],
+  "bin": {
+    "bore": "bin/bore.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "optionalDependencies": {
+    "@qinshower/ltr-linux-arm-musleabi": "0.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

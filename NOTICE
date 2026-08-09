@@ -1,0 +1,5 @@
+LTR is an independent fork and rewrite based on the `bore` project by Eric Zhang:
+
+https://github.com/ekzhang/bore
+
+The original MIT license and copyright notice are retained in `LICENSE`. LTR-specific changes are maintained by the LTR contributors in this repository.

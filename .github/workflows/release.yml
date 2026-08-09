@@ -1,0 +1,440 @@
+on:
+  push:
+    # # Sequence of patterns matched against refs/tags
+    tags:
+      - "v*" # Push events to matching v*, i.e. v1.0, v20.15.10
+
+name: LTR Release
+permissions:
+  contents: write
+
+env:
+  BIN: ltr
+
+jobs:
+  check-version:
+    name: Check release version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check tag and package versions
+        run: npm run npm:check
+
+  create-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: check-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --verify-tag
+
+  cargo:
+    name: Publish Cargo packages
+    runs-on: ubuntu-latest
+    needs: create-release
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Publish Cargo packages
+        shell: bash
+        run: |
+          publish_if_missing() {
+            local package="$1"
+            local version
+            version="$(cargo metadata --no-deps --format-version 1 | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { const packages = JSON.parse(input).packages; console.log(packages.find(packageJson => packageJson.name === process.argv[1]).version); });" "$package")"
+            if cargo search "$package" --limit 20 | grep -q "^${package} = \"${version}\""; then
+              echo "Skipping ${package}@${version}; already published"
+              return 0
+            fi
+            cargo publish -p "$package"
+            wait_for_registry "$package" "$version"
+          }
+
+          wait_for_registry() {
+            local package="$1"
+            local version="$2"
+            for _ in $(seq 1 30); do
+              if cargo search "$package" --limit 20 | grep -q "^${package} = \"${version}\""; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Timed out waiting for ${package}@${version} to appear in crates.io"
+            return 1
+          }
+
+          publish_if_missing ltr-protocol
+          publish_if_missing ltr-relay
+          publish_if_missing ltr-cli
+          publish_if_missing bore-cli
+
+  # This job downloads and stores `cross` as an artifact, so that it can be
+  # redownloaded across all of the jobs. Currently this copied pasted between
+  # the CI and release workflows. Make sure to update both places when making
+  # changes.
+  install-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+
+      - uses: XAMPPRocky/get-github-release@v1
+        id: cross
+        with:
+          owner: rust-embedded
+          repo: cross
+          matches: ${{ matrix.platform }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cross-${{ matrix.platform }}
+          path: ${{ steps.cross.outputs.install_path }}
+    strategy:
+      matrix:
+        platform: [linux-musl]
+
+  macos:
+    runs-on: macos-latest
+    needs: create-release
+    strategy:
+      matrix:
+        target:
+          # macOS
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+      # Cache files between builds
+      - name: Setup | Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.target }}
+
+      - name: Setup | Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          profile: minimal
+          target: ${{ matrix.target }}
+
+      - name: Build | Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.target }}
+
+      - run: tar -czvf "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" --directory=target/${{ matrix.target }}/release ${{ env.BIN }}
+      - run: shasum -a 256 "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" > "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz.sha256"
+
+      - name: Upload Release Asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz.sha256" --clobber
+
+  linux:
+    runs-on: ubuntu-latest
+    needs:
+      - create-release
+      - install-cross
+    strategy:
+      matrix:
+        target:
+          - aarch64-unknown-linux-musl
+          - arm-unknown-linux-musleabi
+          - arm-unknown-linux-gnueabi
+          - armv7-unknown-linux-gnueabihf
+          - armv7-unknown-linux-musleabihf
+          - i686-unknown-linux-musl
+          - x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cross-linux-musl
+          path: /tmp/
+      - run: chmod +x /tmp/cross
+
+      - run: ci/set_rust_version.bash stable ${{ matrix.target }}
+      - run: ci/build.bash /tmp/cross ${{ matrix.target }} RELEASE
+      - run: tar -czvf "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" --directory=target/${{ matrix.target }}/release ${{ env.BIN }}
+      - run: sha256sum "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" > "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz.sha256"
+
+      - name: Upload Release Asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz.sha256" --clobber
+
+  windows:
+    runs-on: windows-latest
+    needs:
+      - create-release
+      - install-cross
+    strategy:
+      matrix:
+        target:
+          # MSVC
+          - i686-pc-windows-msvc
+          - x86_64-pc-windows-msvc
+          # GNU
+          # - i686-pc-windows-gnu
+          # - x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash ci/set_rust_version.bash stable ${{ matrix.target }}
+      - run: bash ci/build.bash cargo ${{ matrix.target }} RELEASE
+      - run: |
+          cd ./target/${{ matrix.target }}/release/
+          7z a "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" "${{ env.BIN }}.exe"
+          sha256sum "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" > "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.zip.sha256"
+          mv "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" $GITHUB_WORKSPACE
+          mv "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.zip.sha256" $GITHUB_WORKSPACE
+        shell: bash
+
+      - name: Upload Release Asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.zip.sha256" --clobber
+        shell: bash
+
+  npm-smoke:
+    name: Smoke npm package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs:
+      - macos
+      - linux
+      - windows
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            package-dir: ltr-linux-x64-musl
+          - os: windows-latest
+            package-dir: ltr-win32-x64-msvc
+          - os: macos-15-intel
+            package-dir: ltr-darwin-x64
+          - os: macos-15
+            package-dir: ltr-darwin-arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Download release assets
+        shell: bash
+        run: |
+          mkdir -p npm-dist
+          gh release download "${GITHUB_REF_NAME}" \
+            --dir npm-dist \
+            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.tar.gz" \
+            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.zip"
+
+      - name: Prepare npm packages
+        shell: bash
+        run: node npm/scripts/prepare-platform-packages-from-assets.mjs npm-dist "${{ matrix.package-dir }}"
+
+      - name: Pack and run CLI through npx
+        shell: bash
+        run: |
+          mkdir -p npm-pack npm-smoke
+
+          main_pack="$(npm pack ./npm/ltr --pack-destination npm-pack --json | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0].filename));")"
+          platform_pack="$(npm pack "./npm/${{ matrix.package-dir }}" --pack-destination npm-pack --json | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0].filename));")"
+          legacy_pack="$(npm pack ./npm/bore --pack-destination npm-pack --json | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0].filename));")"
+
+          cd npm-smoke
+          npm init -y
+          npm install "../npm-pack/${main_pack}" "../npm-pack/${platform_pack}" "../npm-pack/${legacy_pack}" --ignore-scripts
+          npx --no-install ltr --help
+          npx --no-install ltr web --help
+          npx --no-install bore --help
+          bun node_modules/@qinshower/ltr/bin/ltr.js --help
+          bun node_modules/@qinshower/bore/bin/bore.js --help
+
+  npm-package-matrix:
+    name: Pack npm platform (${{ matrix.package-dir }})
+    runs-on: ubuntu-latest
+    needs:
+      - macos
+      - linux
+      - windows
+    strategy:
+      fail-fast: false
+      matrix:
+        package-dir:
+          - ltr-darwin-arm64
+          - ltr-darwin-x64
+          - ltr-linux-arm-gnueabi
+          - ltr-linux-arm-musleabi
+          - ltr-linux-arm64-musl
+          - ltr-linux-armv7-gnueabihf
+          - ltr-linux-armv7-musleabihf
+          - ltr-linux-ia32-musl
+          - ltr-linux-x64-musl
+          - ltr-win32-ia32-msvc
+          - ltr-win32-x64-msvc
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Download release assets
+        shell: bash
+        run: |
+          mkdir -p npm-dist
+          gh release download "${GITHUB_REF_NAME}" \
+            --dir npm-dist \
+            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.tar.gz" \
+            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.zip"
+      - name: Prepare selected platform package
+        run: node npm/scripts/prepare-platform-packages-from-assets.mjs npm-dist "${{ matrix.package-dir }}"
+      - name: Pack selected platform package
+        shell: bash
+        run: |
+          mkdir -p npm-pack
+          pack="$(npm pack "./npm/${{ matrix.package-dir }}" --pack-destination npm-pack --json | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0].filename));")"
+          if [[ "${{ matrix.package-dir }}" == *win32* ]]; then
+            expected_binary="package/bin/ltr.exe"
+          else
+            expected_binary="package/bin/ltr"
+          fi
+          tar -tzf "npm-pack/$pack" | grep -F "$expected_binary" >/dev/null
+
+  npm-legacy-matrix:
+    name: Pack Bore wrapper (${{ matrix.package-dir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package-dir:
+          - bore-darwin-arm64
+          - bore-darwin-x64
+          - bore-linux-arm-gnueabi
+          - bore-linux-arm-musleabi
+          - bore-linux-arm64-musl
+          - bore-linux-armv7-gnueabihf
+          - bore-linux-armv7-musleabihf
+          - bore-linux-ia32-musl
+          - bore-linux-x64-musl
+          - bore-win32-ia32-msvc
+          - bore-win32-x64-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Pack selected Bore wrapper
+        shell: bash
+        run: |
+          mkdir -p npm-pack
+          pack="$(npm pack "./npm/${{ matrix.package-dir }}" --pack-destination npm-pack --json | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0].filename));")"
+          tar -tzf "npm-pack/$pack" | grep -F "package/bin/bore.js" >/dev/null
+
+  npm:
+    name: Publish npm packages
+    runs-on: ubuntu-latest
+    needs:
+      - npm-smoke
+      - npm-package-matrix
+      - npm-legacy-matrix
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Check versions
+        run: npm run npm:check
+
+      - name: Download release assets
+        run: |
+          mkdir -p npm-dist
+          gh release download "${GITHUB_REF_NAME}" \
+            --dir npm-dist \
+            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.tar.gz" \
+            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.zip"
+
+      - name: Prepare npm platform packages
+        run: node npm/scripts/prepare-platform-packages-from-assets.mjs npm-dist
+      - name: Verify every launcher selection
+        run: node npm/scripts/smoke-platform-launchers.mjs
+
+      - name: Dry-run pack npm packages
+        run: npm run npm:pack:dry-run
+
+      - name: Publish npm packages
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            npm_tag=next
+          else
+            npm_tag=latest
+          fi
+
+          publish_if_missing() {
+            local package_dir="$1"
+            local package_name
+            local package_version
+
+            package_name="$(node -p "require('./${package_dir}/package.json').name")"
+            package_version="$(node -p "require('./${package_dir}/package.json').version")"
+
+            if npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+              echo "Skipping ${package_name}@${package_version}; already published"
+              return 0
+            fi
+
+            npm publish "./${package_dir}" --access public --tag "$npm_tag"
+          }
+
+          for package_dir in npm/ltr-*; do
+            publish_if_missing "$package_dir"
+          done
+
+          publish_if_missing "npm/ltr"
+
+          for package_dir in npm/bore-*; do
+            publish_if_missing "$package_dir"
+          done
+
+          publish_if_missing "npm/bore"

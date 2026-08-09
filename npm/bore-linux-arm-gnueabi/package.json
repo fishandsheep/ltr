@@ -1,0 +1,28 @@
+{
+  "name": "@qinshower/bore-linux-arm-gnueabi",
+  "version": "0.0.1",
+  "description": "Deprecated Linux arm GNU EABI Bore wrapper for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm"
+  ],
+  "bin": {
+    "bore": "bin/bore.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "optionalDependencies": {
+    "@qinshower/ltr-linux-arm-gnueabi": "0.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  rust:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - run: cargo build --workspace --all-features
+
+      - run: cargo test --workspace --all-targets
+
+  rustfmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: rustfmt
+
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: clippy
+
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  npm:
+    name: npm and Bun launcher metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: npm run npm:check
+      - run: npm run npm:pack:dry-run
+      - run: node --check npm/ltr/bin/ltr.js
+      - run: node --check npm/bore/bin/bore.js
+      - uses: oven-sh/setup-bun@v2
+      - run: bun --version
+      - run: bun npm/scripts/check-release.mjs
+      - run: node npm/scripts/smoke-platform-launchers.mjs
+
+  compatibility:
+    name: Bore/LTR protocol compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - run: cargo build --release --bin ltr
+      - run: git clone --depth 1 https://github.com/ekzhang/bore.git /tmp/bore-upstream
+      - run: cargo build --release --manifest-path /tmp/bore-upstream/Cargo.toml
+      - run: ci/compatibility.bash target/release/ltr /tmp/bore-upstream/target/release/bore

@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-06-26T00:22:45+08:00",
+  "title": "Design System: Bore Web Console",
+  "extensions": {
+    "northStar": "安静的本地控制面",
+    "register": "product",
+    "colorMeta": {
+      "bg": {
+        "role": "neutral",
+        "displayName": "主背景灰白",
+        "canonical": "#f4f4f1",
+        "tonalRamp": ["#ffffff", "#f8f9f9", "#f4f4f1", "#e8ecef", "#ced6db"]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "主表面",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#ffffff", "#f7f8f8", "#f1f4f5", "#e8edef", "#ced6db"]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "控制蓝",
+        "canonical": "#0f5f78",
+        "tonalRamp": ["#d9e9ee", "#8eb5c2", "#0f5f78", "#0b4c60", "#083646"]
+      },
+      "ok": {
+        "role": "success",
+        "displayName": "运行绿",
+        "canonical": "#11643e",
+        "tonalRamp": ["#d9ece2", "#91bfa8", "#11643e", "#0c4a2e", "#08311f"]
+      },
+      "warn": {
+        "role": "warning",
+        "displayName": "告警棕红",
+        "canonical": "#9a3f20",
+        "tonalRamp": ["#f2e0d8", "#d0a28f", "#9a3f20", "#7b3118", "#572212"]
+      },
+      "danger": {
+        "role": "danger",
+        "displayName": "删除棕红",
+        "canonical": "#8c321d",
+        "tonalRamp": ["#f6ebe7", "#d8b4a8", "#8c321d", "#712818", "#4e1b10"]
+      },
+      "log-bg": {
+        "role": "neutral",
+        "displayName": "日志深底",
+        "canonical": "#111417",
+        "tonalRamp": ["#edf2f5", "#a6b4bf", "#556169", "#243039", "#111417"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "主标题",
+        "purpose": "页面识别与第一屏定位。"
+      },
+      "headline": {
+        "displayName": "区块标题",
+        "purpose": "表单区与列表区标题。"
+      },
+      "body": {
+        "displayName": "正文",
+        "purpose": "说明、路径、元信息和反馈文本。"
+      },
+      "label": {
+        "displayName": "标签",
+        "purpose": "表单标签、badge、按钮语气。"
+      },
+      "mono": {
+        "displayName": "日志等宽字",
+        "purpose": "进程输出阅读。"
+      }
+    },
+    "elevation": {
+      "mode": "flat",
+      "tokens": {
+        "hero": "0 8px 24px rgba(17, 24, 29, 0.06)",
+        "panel": "none",
+        "card": "none",
+        "focus": "0 0 0 3px rgba(15, 95, 120, 0.18)"
+      },
+      "notes": [
+        "只有 hero 使用轻阴影。",
+        "内容容器默认靠描边与表面灰度分层。",
+        "交互可见性主要靠 focus ring，不靠 hover 阴影。"
+      ]
+    },
+    "motion": {
+      "durations": {
+        "fast": "160ms",
+        "slow": "220ms",
+        "polling": "2000ms"
+      },
+      "easing": {
+        "default": "ease",
+        "enter": "ease"
+      },
+      "tokens": {
+        "tunnel-card-enter": {
+          "from": {
+            "opacity": 0,
+            "transform": "translateY(6px)"
+          },
+          "to": {
+            "opacity": 1,
+            "transform": "translateY(0)"
+          }
+        },
+        "button-busy-spin": {
+          "duration": "800ms",
+          "timing": "linear",
+          "iteration": "infinite"
+        }
+      },
+      "notes": [
+        "所有交互过渡都应尊重 `prefers-reduced-motion`。",
+        "轮询更新要尽量保持 DOM 稳定，而不是靠重绘制造状态变化。"
+      ]
+    },
+    "breakpoints": {
+      "stack": "920px",
+      "compact": "720px"
+    },
+    "componentSnippets": {
+      "hero-panel": {
+        "html": "<section class=\"hero\"><div class=\"hero-topline\"><p class=\"hero-kicker\">Local TCP tunnel control</p><p class=\"hero-badge\">2 total • 1 running</p></div><h1>Bore Web Console</h1><p class=\"subtitle\">Create, start, stop, and inspect `bore local` tunnels without leaving the browser.</p></section>",
+        "css": ".hero{background:#ffffff;border:1px solid #ced6db;border-radius:16px;padding:28px;box-shadow:0 8px 24px rgba(17,24,29,.06)}"
+      },
+      "tunnel-card": {
+        "html": "<article class=\"tunnel-card\"><div class=\"card-head\"><div class=\"card-title\"><h3>staging-api</h3><p class=\"route\">127.0.0.1:3000 → bore.pub:43123</p></div><span class=\"status running\">Running</span></div></article>",
+        "css": ".tunnel-card{background:#f7f8f8;border:1px solid #ced6db;border-radius:14px;padding:18px}"
+      },
+      "logs-panel": {
+        "html": "<section class=\"logs\"><pre>Listening on bore.pub:43123</pre></section>",
+        "css": ".logs{background:#111417;border:1px solid #243039;border-radius:12px;padding:16px}.logs pre{max-height:240px;overflow:auto;color:#edf2f5;font-family:\"SFMono-Regular\",Consolas,monospace;font-size:12px;line-height:1.5}"
+      }
+    },
+    "dos": [
+      "保持单一控制面语言，动作与状态优先。",
+      "维持单轮询和稳定 DOM 更新，不打断用户焦点与滚动。",
+      "让长 tunnel 名、时间戳、地址都允许断行。",
+      "继续把触摸目标维持在 44px 以上。"
+    ],
+    "donts": [
+      "不要像营销站：避免夸张 hero 结构、宣传式文案、过度品牌叙事和视觉噱头。",
+      "不要太玻璃拟态：避免依赖模糊、悬浮半透明层和装饰性光效来制造“高级感”。",
+      "不要像花哨低代码面板：避免过多彩色模块、过度圆角、冗余状态徽章、视觉密度失控和不必要的组件花样。",
+      "不要回退到全量 `innerHTML` 列表重绘。",
+      "不要让设计 token 与文档脱节。"
+    ],
+    "notes": [
+      "此 sidecar 对应 2026-06-26 的系统无衬线版本。",
+      "实现重点从展示风格切换到稳定交互、轮询韧性与产品工具感。"
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+[package]
+name = "ltr-relay"
+version = "0.0.1"
+license = "MIT"
+description = "Relay, client, server, authentication, and transport layers for LTR."
+repository = "https://github.com/fishandsheep/ltr"
+documentation = "https://docs.rs/ltr-relay"
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+dashmap = "6.2.1"
+fastrand = "2.4.1"
+futures-util = { version = "0.3.32", features = ["sink"] }
+hex = "0.4.3"
+hmac = "0.13.0"
+rcgen = "0.14.7"
+rustls = "0.23.43"
+rustls-pemfile = "2.2.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+socket2 = "0.6.4"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "io-util", "macros", "net", "signal", "sync", "time"] }
+tokio-rustls = "0.26.4"
+tokio-util = { version = "0.7.18", features = ["codec"] }
+tracing = "0.1.44"
+uuid = { version = "1.23.4", features = ["serde", "v4"] }
+ltr-protocol = { version = "0.0.1", path = "../ltr-protocol" }

@@ -1,0 +1,28 @@
+{
+  "name": "@qinshower/bore-darwin-x64",
+  "version": "0.0.1",
+  "description": "Deprecated macOS x64 Bore wrapper for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "bin": {
+    "bore": "bin/bore.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "optionalDependencies": {
+    "@qinshower/ltr-darwin-x64": "0.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

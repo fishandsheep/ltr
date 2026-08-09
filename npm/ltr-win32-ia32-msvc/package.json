@@ -1,0 +1,22 @@
+{
+  "name": "@qinshower/ltr-win32-ia32-msvc",
+  "version": "0.0.1",
+  "description": "The Windows ia32 MSVC binary for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "ia32"
+  ],
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

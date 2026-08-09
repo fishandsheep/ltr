@@ -1,0 +1,57 @@
+[package]
+name = "ltr-cli"
+version = "0.0.1"
+license = "MIT"
+description = "A Bore-compatible TCP tunnel in Rust with Web and npm/Bun distribution."
+repository = "https://github.com/fishandsheep/ltr"
+documentation = "https://docs.rs/ltr-cli"
+keywords = ["network", "cli", "tunnel", "tcp"]
+categories = ["network-programming", "web-programming", "command-line-utilities"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.85"
+default-run = "ltr"
+
+[workspace]
+resolver = "2"
+members = [".", "crates/bore-cli", "crates/ltr-protocol", "crates/ltr-relay"]
+
+[[bin]]
+name = "ltr"
+path = "src/main.rs"
+
+[[bin]]
+name = "bore"
+path = "src/bore_main.rs"
+
+[dependencies]
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+axum = "0.7.9"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+dashmap = "6.2.1"
+fastrand = "2.4.1"
+futures-util = { version = "0.3.32", features = ["sink"] }
+hex = "0.4.3"
+hmac = "0.13.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+socket2 = "0.6.4"
+time = { version = "0.3.44", features = ["formatting"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "io-util", "macros", "net", "signal", "sync", "time"] }
+tokio-util = { version = "0.7.18", features = ["codec"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+uuid = { version = "1.23.4", features = ["serde", "v4"] }
+rcgen = "0.14.7"
+rustls = "0.23.43"
+rustls-pemfile = "2.2.0"
+tokio-rustls = "0.26.4"
+ltr-protocol = { version = "0.0.1", path = "crates/ltr-protocol" }
+ltr-relay = { version = "0.0.1", path = "crates/ltr-relay" }
+
+[dev-dependencies]
+rstest = "0.26.1"
+tokio = { version = "1.52.3", features = ["sync"] }
+tower = "0.5.2"

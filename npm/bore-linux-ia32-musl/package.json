@@ -1,0 +1,28 @@
+{
+  "name": "@qinshower/bore-linux-ia32-musl",
+  "version": "0.0.1",
+  "description": "Deprecated Linux ia32 musl Bore wrapper for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "ia32"
+  ],
+  "bin": {
+    "bore": "bin/bore.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "optionalDependencies": {
+    "@qinshower/ltr-linux-ia32-musl": "0.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

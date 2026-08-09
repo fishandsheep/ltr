@@ -1,0 +1,19 @@
+[package]
+name = "ltr-protocol"
+version = "0.0.1"
+license = "MIT"
+description = "Frozen Bore v1-compatible framing and protocol messages for LTR."
+repository = "https://github.com/fishandsheep/ltr"
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+anyhow = "1.0.102"
+futures-util = { version = "0.3.32", features = ["sink"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+socket2 = "0.6.4"
+tokio = { version = "1.52.3", features = ["io-util", "net", "time"] }
+tokio-util = { version = "0.7.18", features = ["codec"] }
+tracing = "0.1.44"
+uuid = { version = "1.23.4", features = ["serde", "v4"] }

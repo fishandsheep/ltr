@@ -1,0 +1,22 @@
+{
+  "name": "@qinshower/ltr-linux-arm-gnueabi",
+  "version": "0.0.1",
+  "description": "The Linux arm GNU EABI binary for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm"
+  ],
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

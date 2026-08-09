@@ -1,0 +1,11 @@
+{
+  "private": true,
+  "workspaces": [
+    "npm/*"
+  ],
+  "scripts": {
+    "npm:check": "node npm/scripts/check-release.mjs",
+    "npm:pack:dry-run": "node npm/scripts/pack-dry-run.mjs"
+  },
+  "devDependencies": {}
+}

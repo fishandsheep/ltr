@@ -1,0 +1,18 @@
+[package]
+name = "bore-cli"
+version = "0.0.1"
+license = "MIT"
+description = "Deprecated Bore command wrapper for LTR."
+repository = "https://github.com/fishandsheep/ltr"
+readme = "../../README.md"
+edition = "2021"
+rust-version = "1.85"
+
+[dependencies]
+anyhow = "1.0.102"
+ltr-cli = { version = "0.0.1", path = "../.." }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
+
+[[bin]]
+name = "bore"
+path = "src/main.rs"

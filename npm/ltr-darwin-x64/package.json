@@ -1,0 +1,22 @@
+{
+  "name": "@qinshower/ltr-darwin-x64",
+  "version": "0.0.1",
+  "description": "The macOS x64 binary for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
