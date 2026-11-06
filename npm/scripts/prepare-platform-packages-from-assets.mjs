@@ -16,14 +16,8 @@ if (!tag) {
 const assets = [
   ["aarch64-apple-darwin", "ltr-darwin-arm64", "tar.gz", "ltr"],
   ["x86_64-apple-darwin", "ltr-darwin-x64", "tar.gz", "ltr"],
-  ["arm-unknown-linux-gnueabi", "ltr-linux-arm-gnueabi", "tar.gz", "ltr"],
-  ["arm-unknown-linux-musleabi", "ltr-linux-arm-musleabi", "tar.gz", "ltr"],
   ["aarch64-unknown-linux-musl", "ltr-linux-arm64-musl", "tar.gz", "ltr"],
-  ["armv7-unknown-linux-gnueabihf", "ltr-linux-armv7-gnueabihf", "tar.gz", "ltr"],
-  ["armv7-unknown-linux-musleabihf", "ltr-linux-armv7-musleabihf", "tar.gz", "ltr"],
-  ["i686-unknown-linux-musl", "ltr-linux-ia32-musl", "tar.gz", "ltr"],
   ["x86_64-unknown-linux-musl", "ltr-linux-x64-musl", "tar.gz", "ltr"],
-  ["i686-pc-windows-msvc", "ltr-win32-ia32-msvc", "zip", "ltr.exe"],
   ["x86_64-pc-windows-msvc", "ltr-win32-x64-msvc", "zip", "ltr.exe"]
 ];
 

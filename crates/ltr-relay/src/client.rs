@@ -48,9 +48,9 @@ pub struct LocalArgs {
     #[arg(short, long, env = "LTR_SECRET", hide_env_values = true)]
     pub secret: Option<String>,
 
-    /// Encrypt control and accepted tunnel connections with TLS.
-    #[arg(long)]
-    pub tls: bool,
+    /// Disable TLS and connect over plaintext (for relays without TLS).
+    #[arg(long = "no-tls", action = clap::ArgAction::SetTrue)]
+    pub no_tls: bool,
 
     /// CA PEM used to validate the remote TLS certificate.
     #[arg(long = "tls-ca", env = "LTR_TLS_CA", value_name = "PATH")]
@@ -101,11 +101,140 @@ pub enum TunnelEvent {
         remote_port: Option<u16>,
     },
 
+    /// Periodic traffic snapshot for the tunnel.
+    Stats(TunnelStatsSnapshot),
+
     /// Tunnel stopped cleanly.
     Stopped,
 
     /// Tunnel failed with an error message.
     Failed(String),
+}
+
+/// Traffic snapshot for one tunnel: bytes counted on the data connections.
+/// `bytes_in` flows from remote visitors toward the local service;
+/// `bytes_out` flows back out.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TunnelStatsSnapshot {
+    pub active_connections: u64,
+    pub bytes_in: u64,
+    pub bytes_out: u64,
+}
+
+/// Shared atomic counters behind a [`TunnelStatsSnapshot`].
+#[derive(Debug, Default)]
+pub struct TunnelStats {
+    active_connections: std::sync::atomic::AtomicU64,
+    bytes_in: std::sync::atomic::AtomicU64,
+    bytes_out: std::sync::atomic::AtomicU64,
+}
+
+impl TunnelStats {
+    fn guard(&self) -> ConnectionGuard<'_> {
+        self.active_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        ConnectionGuard(self)
+    }
+
+    fn snapshot(&self) -> TunnelStatsSnapshot {
+        TunnelStatsSnapshot {
+            active_connections: self
+                .active_connections
+                .load(std::sync::atomic::Ordering::Relaxed),
+            bytes_in: self.bytes_in.load(std::sync::atomic::Ordering::Relaxed),
+            bytes_out: self.bytes_out.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+struct ConnectionGuard<'a>(&'a TunnelStats);
+
+impl Drop for ConnectionGuard<'_> {
+    fn drop(&mut self) {
+        self.0
+            .active_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Aborts the wrapped task when the guard drops, keeping periodic work tied
+/// to the lifetime of the function that spawned it.
+struct AbortOnDrop(Option<tokio::task::JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
+    }
+}
+
+/// Wraps a data-connection stream, counting bytes in both directions.
+struct CountingStream<S> {
+    inner: S,
+    stats: Arc<TunnelStats>,
+}
+
+impl<S> CountingStream<S> {
+    fn new(inner: S, stats: Arc<TunnelStats>) -> Self {
+        Self { inner, stats }
+    }
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for CountingStream<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let filled_before = buf.filled().len();
+        let inner = std::pin::Pin::new(&mut self.inner);
+        match inner.poll_read(cx, buf) {
+            std::task::Poll::Ready(Ok(())) => {
+                let n = buf.filled().len().saturating_sub(filled_before);
+                if n > 0 {
+                    self.stats
+                        .bytes_in
+                        .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+                }
+                std::task::Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for CountingStream<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::result::Result<usize, std::io::Error>> {
+        let inner = std::pin::Pin::new(&mut self.inner);
+        match inner.poll_write(cx, buf) {
+            std::task::Poll::Ready(Ok(n)) => {
+                self.stats
+                    .bytes_out
+                    .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+                std::task::Poll::Ready(Ok(n))
+            }
+            other => other,
+        }
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), std::io::Error>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 /// State structure for the client.
@@ -136,6 +265,12 @@ pub struct Client {
 
     /// Optional TLS transport for control and accept connections.
     tls: Option<ClientTlsConfig>,
+
+    /// Set once negotiation discovers the peer only speaks plaintext.
+    plaintext_peer: std::sync::atomic::AtomicBool,
+
+    /// Traffic counters for the data connections of this tunnel.
+    stats: Arc<TunnelStats>,
 
     /// Limits concurrent accepted data connections.
     connection_limit: Arc<Semaphore>,
@@ -211,7 +346,13 @@ impl Client {
             max_active_connections,
         } = options;
         let auth = secret.map(Authenticator::new);
-        let (stream, remote_port) = connect_control(to, port, auth.as_ref(), tls.as_ref()).await?;
+        let plaintext_peer = std::sync::atomic::AtomicBool::new(false);
+        let stats = Arc::new(TunnelStats::default());
+        let (stream, remote_port) =
+            connect_control(to, port, auth.as_ref(), tls.as_ref(), &plaintext_peer).await?;
+        if let Some(note) = tls.as_ref().and_then(|tls| tls.take_trust_note()) {
+            info!(note = %note, "tls trust");
+        }
         info!(remote_port, "connected to server");
         info!("listening at {to}:{remote_port}");
 
@@ -225,6 +366,8 @@ impl Client {
             auth,
             event_tx,
             tls,
+            plaintext_peer,
+            stats: Arc::clone(&stats),
             connection_limit: Arc::new(Semaphore::new(max_active_connections.max(1))),
         };
         client.emit_log(format!("connected to {to}:{CONTROL_PORT}"));
@@ -254,6 +397,24 @@ impl Client {
         let mut reconnect_delay = RECONNECT_MIN_DELAY;
         tokio::pin!(shutdown);
 
+        // Dedicated stats ticker: the control connection receives server
+        // heartbeats every ~500ms, which would reset a sleep inside the
+        // select loop below and starve the tick.
+        let _stats_ticker = AbortOnDrop(if this.event_tx.is_some() {
+            let ticker_client = Arc::clone(&this);
+            Some(tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    emit_event(
+                        &ticker_client.event_tx,
+                        TunnelEvent::Stats(ticker_client.stats.snapshot()),
+                    );
+                }
+            }))
+        } else {
+            None
+        });
+
         loop {
             if conn.is_none() {
                 let port = this.reconnect_port();
@@ -265,7 +426,15 @@ impl Client {
                     _ = tokio::time::sleep(reconnect_delay) => {}
                 }
 
-                match connect_control(&this.to, port, this.auth.as_ref(), this.tls.as_ref()).await {
+                match connect_control(
+                    &this.to,
+                    port,
+                    this.auth.as_ref(),
+                    this.tls.as_ref(),
+                    &this.plaintext_peer,
+                )
+                .await
+                {
                     Ok((stream, remote_port)) => {
                         info!(remote_port, "reconnected to server");
                         this.emit_log(format!("reconnected to {}:{CONTROL_PORT}", this.to));
@@ -353,8 +522,18 @@ impl Client {
     }
 
     async fn handle_connection(&self, id: Uuid) -> Result<()> {
-        let mut remote_conn =
-            Delimited::new(transport::connect(&self.to, CONTROL_PORT, self.tls.as_ref()).await?);
+        let stream = transport::connect_negotiated(
+            &self.to,
+            CONTROL_PORT,
+            self.tls.as_ref(),
+            &self.plaintext_peer,
+        )
+        .await?;
+        let _connection_guard = self.stats.guard();
+        let mut remote_conn = Delimited::new(Box::new(CountingStream::new(
+            stream,
+            Arc::clone(&self.stats),
+        )) as BoxedStream);
         if let Some(auth) = &self.auth {
             auth.client_handshake(&mut remote_conn).await?;
         }
@@ -404,14 +583,21 @@ where
         )),
     );
 
-    let tls = if args.tls {
+    let tls = if args.no_tls {
+        None
+    } else {
+        let tofu_host = format!("{}:{}", args.to, CONTROL_PORT);
         match transport::load_client_tls(
-            args.tls_ca.as_deref(),
-            args.tls_fingerprint.as_deref(),
-            args.tls_server_name.as_deref(),
+            transport::ClientTlsOptions {
+                ca_path: args.tls_ca.as_deref(),
+                fingerprint: args.tls_fingerprint.as_deref(),
+                server_name: args.tls_server_name.as_deref(),
+                client_cert_path: args.tls_client_cert.as_deref(),
+                client_key_path: args.tls_client_key.as_deref(),
+                tofu_host: &tofu_host,
+                tofu_store_path: None,
+            },
             &args.to,
-            args.tls_client_cert.as_deref(),
-            args.tls_client_key.as_deref(),
         ) {
             Ok(tls) => Some(tls),
             Err(err) => {
@@ -419,8 +605,6 @@ where
                 return Err(err);
             }
         }
-    } else {
-        None
     };
 
     let client = match Client::new_with_runtime(
@@ -481,8 +665,10 @@ async fn connect_control(
     port: u16,
     auth: Option<&Authenticator>,
     tls: Option<&ClientTlsConfig>,
+    plaintext_peer: &std::sync::atomic::AtomicBool,
 ) -> Result<(Delimited<BoxedStream>, u16)> {
-    let mut stream = Delimited::new(transport::connect(to, CONTROL_PORT, tls).await?);
+    let mut stream =
+        Delimited::new(transport::connect_negotiated(to, CONTROL_PORT, tls, plaintext_peer).await?);
     if let Some(auth) = auth {
         auth.client_handshake(&mut stream).await?;
     }

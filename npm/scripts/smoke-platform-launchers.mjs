@@ -15,27 +15,15 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const ltrPackages = [
   "ltr-darwin-arm64",
   "ltr-darwin-x64",
-  "ltr-linux-arm-gnueabi",
-  "ltr-linux-arm-musleabi",
   "ltr-linux-arm64-musl",
-  "ltr-linux-armv7-gnueabihf",
-  "ltr-linux-armv7-musleabihf",
-  "ltr-linux-ia32-musl",
   "ltr-linux-x64-musl",
-  "ltr-win32-ia32-msvc",
   "ltr-win32-x64-msvc"
 ];
 const cases = [
   ["darwin", "arm64", null, "ltr-darwin-arm64"],
   ["darwin", "x64", null, "ltr-darwin-x64"],
-  ["linux", "arm", [false, 6], "ltr-linux-arm-gnueabi"],
-  ["linux", "arm", [true, 6], "ltr-linux-arm-musleabi"],
-  ["linux", "arm", [false, 7], "ltr-linux-armv7-gnueabihf"],
-  ["linux", "arm", [true, 7], "ltr-linux-armv7-musleabihf"],
   ["linux", "arm64", [true, null], "ltr-linux-arm64-musl"],
-  ["linux", "ia32", [true, null], "ltr-linux-ia32-musl"],
   ["linux", "x64", [true, null], "ltr-linux-x64-musl"],
-  ["win32", "ia32", null, "ltr-win32-ia32-msvc"],
   ["win32", "x64", null, "ltr-win32-x64-msvc"]
 ];
 
@@ -44,7 +32,7 @@ const scope = join(smokeRoot, "node_modules", "@qinshower");
 mkdirSync(scope, { recursive: true });
 
 try {
-  for (const packageDir of ["ltr", "bore", ...ltrPackages]) {
+  for (const packageDir of ["ltr", ...ltrPackages]) {
     cpSync(join(root, "npm", packageDir), join(scope, packageDir), { recursive: true });
   }
 
@@ -103,10 +91,9 @@ try {
     };
 
     run(join(scope, "ltr", "bin", "ltr.js"), "LTR " + platform + "/" + arch);
-    run(join(scope, "bore", "bin", "bore.js"), "Bore " + platform + "/" + arch);
   }
 } finally {
   rmSync(smokeRoot, { recursive: true, force: true });
 }
 
-console.log("All 11 LTR/Bore platform launcher selections passed");
+console.log("All 5 LTR platform launcher selections passed");

@@ -325,3 +325,64 @@ async fn half_closed_tcp_stream() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn tunnel_stats_report_bytes_and_connections() -> Result<()> {
+    use ltr_cli::client::TunnelEvent;
+    use tokio::sync::mpsc;
+
+    let _guard = SERIAL_GUARD.lock().await;
+    let _server = spawn_server(None).await?;
+
+    let listener = TcpListener::bind("localhost:0").await?;
+    let local_port = listener.local_addr()?.port();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+    let client = Client::new_with_events(
+        "localhost",
+        local_port,
+        "localhost",
+        0,
+        None,
+        Some(event_tx),
+    )
+    .await?;
+    let remote_addr = ([127, 0, 0, 1], client.remote_port()).into();
+    tokio::spawn(client.listen());
+    let echo = tokio::spawn(run_echo_service(listener, 1));
+
+    let payload = b"tunnel-stats-payload";
+    roundtrip(remote_addr, payload).await?;
+    echo.await??;
+
+    // The periodic stats ticker emits snapshots at most a second later.
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    let mut latest = None;
+    while std::time::Instant::now() < deadline {
+        while let Ok(event) = event_rx.try_recv() {
+            if let TunnelEvent::Stats(stats) = event {
+                latest = Some(stats);
+            }
+        }
+        if let Some(stats) = latest {
+            if stats.bytes_in >= payload.len() as u64
+                && stats.bytes_out >= payload.len() as u64
+                && stats.active_connections == 0
+            {
+                break;
+            }
+        }
+        time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let stats = latest.expect("stats event should arrive");
+    assert!(
+        stats.bytes_in >= payload.len() as u64,
+        "bytes_in should count visitor traffic, got {stats:?}"
+    );
+    assert!(
+        stats.bytes_out >= payload.len() as u64,
+        "bytes_out should count response traffic, got {stats:?}"
+    );
+    assert_eq!(stats.active_connections, 0, "connection guard releases");
+    Ok(())
+}

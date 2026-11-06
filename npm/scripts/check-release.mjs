@@ -15,32 +15,12 @@ const packageNames = [
   "ltr",
   "ltr-darwin-arm64",
   "ltr-darwin-x64",
-  "ltr-linux-arm-gnueabi",
-  "ltr-linux-arm-musleabi",
   "ltr-linux-arm64-musl",
-  "ltr-linux-armv7-gnueabihf",
-  "ltr-linux-armv7-musleabihf",
-  "ltr-linux-ia32-musl",
   "ltr-linux-x64-musl",
-  "ltr-win32-ia32-msvc",
   "ltr-win32-x64-msvc"
 ];
-const legacyPackageNames = [
-  "bore",
-  "bore-darwin-arm64",
-  "bore-darwin-x64",
-  "bore-linux-arm-gnueabi",
-  "bore-linux-arm-musleabi",
-  "bore-linux-arm64-musl",
-  "bore-linux-armv7-gnueabihf",
-  "bore-linux-armv7-musleabihf",
-  "bore-linux-ia32-musl",
-  "bore-linux-x64-musl",
-  "bore-win32-ia32-msvc",
-  "bore-win32-x64-msvc"
-];
 
-for (const packageDir of [...packageNames, ...legacyPackageNames]) {
+for (const packageDir of packageNames) {
   const packageJsonPath = join(root, "npm", packageDir, "package.json");
   const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 

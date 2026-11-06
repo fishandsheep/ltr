@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, Subcommand};
 
 use crate::{
@@ -20,36 +20,12 @@ use crate::{
     },
 };
 
-const LEGACY_ENV_ALIASES: &[(&str, &str)] = &[
-    ("LTR_LOCAL_PORT", "BORE_LOCAL_PORT"),
-    ("LTR_SERVER", "BORE_SERVER"),
-    ("LTR_SECRET", "BORE_SECRET"),
-    ("LTR_WEB_TOKEN", "BORE_WEB_TOKEN"),
-    ("LTR_MIN_PORT", "BORE_MIN_PORT"),
-    ("LTR_MAX_PORT", "BORE_MAX_PORT"),
-];
-
 const WEB_RISK_WARNING: &str =
     "Warning: remote Web access is public. Keep the bearer token private and protect the HTTPS endpoint.";
 
-/// Top-level CLI arguments.
-#[derive(Parser, Debug)]
-#[command(
-    author,
-    version,
-    about,
-    disable_version_flag = true,
-    after_help = "Examples:\n  ltr local 8000 --to your-server.example\n  ltr -w\n  ltr web --remote --to your-server.example --port 7836 --secret xxx\n  ltr bundle --to your-server.example --secret xxx\n  npx @qinshower/ltr web\n  npx @qinshower/ltr -- -w"
-)]
-pub struct Args {
-    /// Prints version information.
-    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
-    pub version: Option<bool>,
-
-    /// Starts the local web console.
-    #[arg(short = 'w', long = "web")]
-    pub web: bool,
-
+/// Shared local web console arguments, flattened into every mode that hosts the console.
+#[derive(clap::Args, Debug, Clone)]
+pub struct WebConsoleArgs {
     /// Address for the local web console.
     #[arg(long = "web-addr", default_value = "127.0.0.1:7836")]
     pub web_addr: SocketAddr,
@@ -81,6 +57,24 @@ pub struct Args {
         default_value_t = 500
     )]
     pub web_max_log_lines: usize,
+}
+
+/// Top-level CLI arguments.
+#[derive(Parser, Debug)]
+#[command(
+    author,
+    version,
+    about,
+    disable_version_flag = true,
+    after_help = "Examples:\n  ltr\n  ltr local 8000 --to your-server.example\n  ltr bundle --to your-server.example --secret xxx\n  ltr bundle --to your-server.example --no-ssh\n  npx @qinshower/ltr"
+)]
+pub struct Args {
+    /// Prints version information.
+    #[arg(short = 'v', long = "version", action = ArgAction::Version)]
+    pub version: Option<bool>,
+
+    #[command(flatten)]
+    pub web: WebConsoleArgs,
 
     /// Log filter, for example info or ltr_cli=debug.
     #[arg(long = "log-level", env = "LTR_LOG_LEVEL", default_value = "info")]
@@ -113,29 +107,13 @@ pub fn init_logging(args: &Args) {
     }
 }
 
-/// Parses an argument iterator with the same environment compatibility rules as the binary.
+/// Parses an argument iterator.
 pub fn parse_args_from<I, T>(args: I) -> Args
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    promote_legacy_env();
     Args::parse_from(args)
-}
-
-fn promote_legacy_env() {
-    for (canonical, legacy) in LEGACY_ENV_ALIASES {
-        let Some(value) = env::var_os(legacy) else {
-            continue;
-        };
-
-        if env::var_os(canonical).is_none() {
-            env::set_var(canonical, value);
-            eprintln!("Warning: {legacy} is deprecated; use {canonical} instead.");
-        } else {
-            eprintln!("Warning: {legacy} is deprecated and ignored; use {canonical} instead.");
-        }
-    }
 }
 
 /// Top-level command variants.
@@ -144,78 +122,14 @@ pub enum Command {
     /// Starts a local proxy to the remote server.
     Local(LocalArgs),
 
-    /// Starts web console. Prefer this form for `npx`.
-    Web(WebArgs),
-
-    /// Starts Web + SSH bundle with remote system tunnels.
-    #[command(alias = "home")]
+    /// Exposes the web console (and SSH by default) through a remote relay.
     Bundle(BundleArgs),
 
     /// Runs remote proxy server.
     Server(ServerArgs),
 }
 
-/// Web console CLI arguments.
-#[derive(clap::Args, Debug, Clone)]
-pub struct WebArgs {
-    /// Address for local web console.
-    #[arg(long = "web-addr", default_value = "127.0.0.1:7836")]
-    pub web_addr: SocketAddr,
-
-    /// Expose web console through remote tunnel on target server.
-    #[arg(long, requires = "to")]
-    pub remote: bool,
-
-    /// Address of remote server to expose web console to.
-    #[arg(short, long)]
-    pub to: Option<String>,
-
-    /// Requested remote port for web console tunnel.
-    #[arg(short, long, default_value_t = 7836)]
-    pub port: u16,
-
-    /// Optional secret for tunnel authentication.
-    #[arg(short, long, env = "LTR_SECRET", hide_env_values = true)]
-    pub secret: Option<String>,
-
-    /// Bearer token for remote Web API requests.
-    #[arg(long = "web-token", env = "LTR_WEB_TOKEN", hide_env_values = true)]
-    pub web_token: Option<String>,
-
-    /// PEM certificate for remote Web HTTPS.
-    #[arg(long = "web-cert", value_name = "PATH")]
-    pub web_cert: Option<PathBuf>,
-
-    /// PEM private key for remote Web HTTPS.
-    #[arg(long = "web-key", value_name = "PATH")]
-    pub web_key: Option<PathBuf>,
-
-    /// Maximum number of tunnel definitions in the Web control plane.
-    #[arg(
-        long = "web-max-tunnels",
-        env = "LTR_WEB_MAX_TUNNELS",
-        default_value_t = 64
-    )]
-    pub web_max_tunnels: usize,
-
-    /// Maximum active data connections per Web-managed tunnel.
-    #[arg(
-        long = "web-max-connections",
-        env = "LTR_WEB_MAX_CONNECTIONS",
-        default_value_t = 256
-    )]
-    pub web_max_connections: usize,
-
-    /// Maximum retained log lines per Web-managed tunnel.
-    #[arg(
-        long = "web-max-log-lines",
-        env = "LTR_WEB_MAX_LOG_LINES",
-        default_value_t = 500
-    )]
-    pub web_max_log_lines: usize,
-}
-
-/// Home bundle CLI arguments.
+/// Remote bundle CLI arguments.
 #[derive(clap::Args, Debug, Clone)]
 pub struct BundleArgs {
     /// Address of remote server to expose home services to.
@@ -226,9 +140,8 @@ pub struct BundleArgs {
     #[arg(short, long, env = "LTR_SECRET", hide_env_values = true)]
     pub secret: Option<String>,
 
-    /// Bearer token for remote Web API requests.
-    #[arg(long = "web-token", env = "LTR_WEB_TOKEN", hide_env_values = true)]
-    pub web_token: Option<String>,
+    #[command(flatten)]
+    pub web: WebConsoleArgs,
 
     /// PEM certificate for remote Web HTTPS.
     #[arg(long = "web-cert", value_name = "PATH")]
@@ -237,34 +150,6 @@ pub struct BundleArgs {
     /// PEM private key for remote Web HTTPS.
     #[arg(long = "web-key", value_name = "PATH")]
     pub web_key: Option<PathBuf>,
-
-    /// Maximum number of tunnel definitions in the Web control plane.
-    #[arg(
-        long = "web-max-tunnels",
-        env = "LTR_WEB_MAX_TUNNELS",
-        default_value_t = 64
-    )]
-    pub web_max_tunnels: usize,
-
-    /// Maximum active data connections per Web-managed tunnel.
-    #[arg(
-        long = "web-max-connections",
-        env = "LTR_WEB_MAX_CONNECTIONS",
-        default_value_t = 256
-    )]
-    pub web_max_connections: usize,
-
-    /// Maximum retained log lines per Web-managed tunnel.
-    #[arg(
-        long = "web-max-log-lines",
-        env = "LTR_WEB_MAX_LOG_LINES",
-        default_value_t = 500
-    )]
-    pub web_max_log_lines: usize,
-
-    /// Address for local web console.
-    #[arg(long = "web-addr", default_value = "127.0.0.1:7836")]
-    pub web_addr: SocketAddr,
 
     /// Requested remote port for web console tunnel.
     #[arg(long = "web-port", default_value_t = 7836)]
@@ -277,6 +162,10 @@ pub struct BundleArgs {
     /// Requested remote port for SSH tunnel.
     #[arg(long = "ssh-port", default_value_t = 2222)]
     pub ssh_port: u16,
+
+    /// Skip the SSH tunnel and only expose the web console.
+    #[arg(long = "no-ssh", action = ArgAction::SetTrue)]
+    pub no_ssh: bool,
 }
 
 /// Server CLI arguments.
@@ -302,11 +191,11 @@ pub struct ServerArgs {
     #[arg(long)]
     pub bind_tunnels: Option<IpAddr>,
 
-    /// Enable tunnel TLS, generating and persisting a certificate when paths are omitted.
-    #[arg(long, env = "LTR_TLS")]
-    pub tls: bool,
+    /// Disable tunnel TLS. TLS is enabled by default with a generated certificate.
+    #[arg(long = "no-tls", env = "LTR_NO_TLS", action = ArgAction::SetTrue)]
+    pub no_tls: bool,
 
-    /// PEM certificate used by optional tunnel TLS.
+    /// PEM certificate overriding the default generated tunnel certificate.
     #[arg(long = "tls-cert", env = "LTR_TLS_CERT", value_name = "PATH")]
     pub tls_cert: Option<PathBuf>,
 
@@ -322,22 +211,14 @@ pub struct ServerArgs {
 /// Validates parsed CLI arguments.
 pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
     match &args.command {
-        Some(Command::Web(web_args))
-            if web_args.remote && !web_args.web_addr.ip().is_loopback() =>
-        {
-            Err(Args::command().error(
-                ErrorKind::InvalidValue,
-                "remote web mode requires --web-addr to bind to loopback",
-            ))
-        }
-        Some(Command::Bundle(bundle_args)) if !bundle_args.web_addr.ip().is_loopback() => {
+        Some(Command::Bundle(bundle_args)) if !bundle_args.web.web_addr.ip().is_loopback() => {
             Err(Args::command().error(
                 ErrorKind::InvalidValue,
                 "bundle mode requires --web-addr to bind to loopback",
             ))
         }
         Some(Command::Local(local_args))
-            if !local_args.tls
+            if local_args.no_tls
                 && (local_args.tls_ca.is_some()
                     || local_args.tls_fingerprint.is_some()
                     || local_args.tls_server_name.is_some()
@@ -346,17 +227,7 @@ pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
         {
             Err(Args::command().error(
                 ErrorKind::InvalidValue,
-                "--tls-ca, --tls-fingerprint, and --tls-server-name require --tls",
-            ))
-        }
-        Some(Command::Local(local_args))
-            if local_args.tls
-                && local_args.tls_ca.is_none()
-                && local_args.tls_fingerprint.is_none() =>
-        {
-            Err(Args::command().error(
-                ErrorKind::InvalidValue,
-                "--tls requires --tls-ca or --tls-fingerprint",
+                "--tls-ca, --tls-fingerprint, --tls-server-name, --tls-client-cert, and --tls-client-key cannot be used with --no-tls",
             ))
         }
         Some(Command::Local(local_args))
@@ -365,22 +236,6 @@ pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
             Err(Args::command().error(
                 ErrorKind::InvalidValue,
                 "--tls-client-cert and --tls-client-key must be provided together",
-            ))
-        }
-        Some(Command::Web(web_args))
-            if web_args.web_cert.is_some() != web_args.web_key.is_some() =>
-        {
-            Err(Args::command().error(
-                ErrorKind::InvalidValue,
-                "--web-cert and --web-key must be provided together",
-            ))
-        }
-        Some(Command::Web(web_args))
-            if !web_args.remote && (web_args.web_cert.is_some() || web_args.web_key.is_some()) =>
-        {
-            Err(Args::command().error(
-                ErrorKind::InvalidValue,
-                "--web-cert and --web-key require --remote",
             ))
         }
         Some(Command::Bundle(bundle_args))
@@ -400,14 +255,19 @@ pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
             ))
         }
         Some(Command::Server(server_args))
-            if server_args.tls_client_ca.is_some()
-                && !server_args.tls
-                && server_args.tls_cert.is_none()
-                && server_args.tls_key.is_none() =>
+            if server_args.tls_client_ca.is_some() && server_args.no_tls =>
         {
             Err(Args::command().error(
                 ErrorKind::InvalidValue,
-                "--tls-client-ca requires --tls or --tls-cert and --tls-key",
+                "--tls-client-ca cannot be used with --no-tls",
+            ))
+        }
+        Some(Command::Server(server_args))
+            if server_args.no_tls && (server_args.tls_cert.is_some() || server_args.tls_key.is_some()) =>
+        {
+            Err(Args::command().error(
+                ErrorKind::InvalidValue,
+                "--tls-cert and --tls-key cannot be used with --no-tls",
             ))
         }
         _ => Ok(()),
@@ -421,33 +281,17 @@ pub async fn run(args: Args) -> Result<()> {
     }
 
     match args.command {
-        Some(_) if args.web => {
-            Args::command()
-                .error(
-                    ErrorKind::ArgumentConflict,
-                    "--web cannot be used together with a subcommand",
-                )
-                .exit();
-        }
-        None if args.web => {
+        None => {
             return run_web_local(
-                args.web_addr,
-                args.web_token,
+                args.web.web_addr,
+                args.web.web_token,
                 web_limits(
-                    args.web_max_tunnels,
-                    args.web_max_connections,
-                    args.web_max_log_lines,
+                    args.web.web_max_tunnels,
+                    args.web.web_max_connections,
+                    args.web.web_max_log_lines,
                 ),
             )
             .await;
-        }
-        None => {
-            Args::command()
-                .error(
-                    ErrorKind::MissingSubcommand,
-                    "a subcommand is required unless --web is used",
-                )
-                .exit();
         }
         Some(Command::Local(local_args)) => {
             run_local(
@@ -458,22 +302,6 @@ pub async fn run(args: Args) -> Result<()> {
                 None,
             )
             .await?;
-        }
-        Some(Command::Web(web_args)) => {
-            if web_args.remote {
-                run_web_remote(web_args).await?;
-            } else {
-                run_web_local(
-                    web_args.web_addr,
-                    web_args.web_token,
-                    web_limits(
-                        web_args.web_max_tunnels,
-                        web_args.web_max_connections,
-                        web_args.web_max_log_lines,
-                    ),
-                )
-                .await?;
-            }
         }
         Some(Command::Bundle(bundle_args)) => {
             run_bundle(bundle_args).await?;
@@ -488,11 +316,7 @@ pub async fn run(args: Args) -> Result<()> {
             let mut server = Server::new(port_range, server_args.secret.as_deref());
             server.set_bind_addr(server_args.bind_addr);
             server.set_bind_tunnels(server_args.bind_tunnels.unwrap_or(server_args.bind_addr));
-            let tls_requested = server_args.tls
-                || server_args.tls_cert.is_some()
-                || server_args.tls_key.is_some()
-                || server_args.tls_client_ca.is_some();
-            if tls_requested {
+            if !server_args.no_tls {
                 let tls = match (&server_args.tls_cert, &server_args.tls_key) {
                     (Some(cert), Some(key)) => {
                         transport::load_server_tls(cert, key, server_args.tls_client_ca.as_deref())?
@@ -562,7 +386,13 @@ pub async fn run_web_local(
             "Warning: Web console is exposed on a non-loopback address without Web authentication."
         );
     }
-    let state = WebState::with_limits(SessionInfo::local(), web_token, None, limits);
+    let state = WebState::with_limits_and_store(
+        SessionInfo::local(),
+        web_token,
+        None,
+        limits,
+        Some(web::default_tunnels_path()),
+    );
     web::serve_with_state(
         web::ServeConfig {
             addr: web_addr,
@@ -574,124 +404,76 @@ pub async fn run_web_local(
     .await
 }
 
-pub async fn run_web_remote(args: WebArgs) -> Result<()> {
-    let server = args
-        .to
-        .clone()
-        .ok_or_else(|| anyhow!("--to is required when --remote is used"))?;
-    let session = SessionInfo {
-        mode: SessionMode::RemoteWeb,
-        warnings: vec![WEB_RISK_WARNING.to_string()],
-        loopback_only: true,
-        web_remote_url: Some(format!("https://{}:{}", server, args.port)),
-        ssh_remote_endpoint: None,
-    };
-    let token_was_generated = args.web_token.is_none();
-    let certificate_was_generated = args.web_cert.is_none();
-    let web_token = credentials::load_or_generate(args.web_token)?;
-    let web_tls = credentials::load_or_generate_tls(
-        &server,
-        args.web_cert.as_deref(),
-        args.web_key.as_deref(),
-    )?;
-    let state = WebState::with_limits(
-        session,
-        Some(web_token.clone()),
-        Some(web_tls),
-        web_limits(
-            args.web_max_tunnels,
-            args.web_max_connections,
-            args.web_max_log_lines,
-        ),
-    );
-    report_generated_web_credentials(token_was_generated, certificate_was_generated)?;
-    let display_url = format!("https://{}:{}", server, args.port);
-    web::run_managed(
-        web::ServeConfig {
-            addr: args.web_addr,
-            session: state.session().await,
-        },
-        state,
-        vec![SystemTunnelSpec {
-            role: SystemTunnelRole::WebConsole,
-            config: TunnelConfig {
-                name: "Web Console".to_string(),
-                local_port: args.web_addr.port(),
-                to: server,
-                port: Some(args.port),
-                local_host: "127.0.0.1".to_string(),
-                secret: args.secret,
-            },
-            display_url: Some(display_url),
-        }],
-        async {
-            let _ = tokio::signal::ctrl_c().await;
-        },
-    )
-    .await
-}
-
 pub async fn run_bundle(args: BundleArgs) -> Result<()> {
+    let include_ssh = !args.no_ssh;
     let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let session = SessionInfo {
-        mode: SessionMode::Home,
+        mode: if include_ssh {
+            SessionMode::Home
+        } else {
+            SessionMode::RemoteWeb
+        },
         warnings: vec![WEB_RISK_WARNING.to_string()],
         loopback_only: true,
         web_remote_url: Some(format!("https://{}:{}", args.to, args.web_port)),
-        ssh_remote_endpoint: Some(format!("{}:{}", args.to, args.ssh_port)),
+        ssh_remote_endpoint: include_ssh.then(|| format!("{}:{}", args.to, args.ssh_port)),
     };
-    let token_was_generated = args.web_token.is_none();
+    let token_was_generated = args.web.web_token.is_none();
     let certificate_was_generated = args.web_cert.is_none();
-    let web_token = credentials::load_or_generate(args.web_token)?;
+    let web_token = credentials::load_or_generate(args.web.web_token)?;
     let web_tls = credentials::load_or_generate_tls(
         &args.to,
         args.web_cert.as_deref(),
         args.web_key.as_deref(),
     )?;
-    let state = WebState::with_limits(
+    let state = WebState::with_limits_and_store(
         session,
         Some(web_token.clone()),
         Some(web_tls),
         web_limits(
-            args.web_max_tunnels,
-            args.web_max_connections,
-            args.web_max_log_lines,
+            args.web.web_max_tunnels,
+            args.web.web_max_connections,
+            args.web.web_max_log_lines,
         ),
+        Some(web::default_tunnels_path()),
     );
     report_generated_web_credentials(token_was_generated, certificate_was_generated)?;
-    println!("SSH access: ssh {user}@{} -p {}", args.to, args.ssh_port);
+    if include_ssh {
+        println!("SSH access: ssh {user}@{} -p {}", args.to, args.ssh_port);
+    }
+    let mut system_tunnels = vec![SystemTunnelSpec {
+        role: SystemTunnelRole::WebConsole,
+        config: TunnelConfig {
+            name: "Web Console".to_string(),
+            local_port: args.web.web_addr.port(),
+            to: args.to.clone(),
+            port: Some(args.web_port),
+            local_host: "127.0.0.1".to_string(),
+            secret: args.secret.clone(),
+        },
+        display_url: Some(format!("https://{}:{}", args.to, args.web_port)),
+    }];
+    if include_ssh {
+        system_tunnels.push(SystemTunnelSpec {
+            role: SystemTunnelRole::Ssh,
+            config: TunnelConfig {
+                name: "SSH".to_string(),
+                local_port: args.ssh_local_port,
+                to: args.to.clone(),
+                port: Some(args.ssh_port),
+                local_host: "127.0.0.1".to_string(),
+                secret: args.secret,
+            },
+            display_url: Some(format!("{}:{}", args.to, args.ssh_port)),
+        });
+    }
     web::run_managed(
         web::ServeConfig {
-            addr: args.web_addr,
+            addr: args.web.web_addr,
             session: state.session().await,
         },
         state,
-        vec![
-            SystemTunnelSpec {
-                role: SystemTunnelRole::WebConsole,
-                config: TunnelConfig {
-                    name: "Web Console".to_string(),
-                    local_port: args.web_addr.port(),
-                    to: args.to.clone(),
-                    port: Some(args.web_port),
-                    local_host: "127.0.0.1".to_string(),
-                    secret: args.secret.clone(),
-                },
-                display_url: Some(format!("https://{}:{}", args.to, args.web_port)),
-            },
-            SystemTunnelSpec {
-                role: SystemTunnelRole::Ssh,
-                config: TunnelConfig {
-                    name: "SSH".to_string(),
-                    local_port: args.ssh_local_port,
-                    to: args.to.clone(),
-                    port: Some(args.ssh_port),
-                    local_host: "127.0.0.1".to_string(),
-                    secret: args.secret,
-                },
-                display_url: Some(format!("{}:{}", args.to, args.ssh_port)),
-            },
-        ],
+        system_tunnels,
         async {
             let _ = tokio::signal::ctrl_c().await;
         },
@@ -710,61 +492,61 @@ mod tests {
     static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn parse_web_long_flag() {
-        let args = Args::try_parse_from(["bore", "--web"]).expect("parse should succeed");
-        assert!(args.web);
-        assert_eq!(args.web_addr.to_string(), "127.0.0.1:7836");
+    fn zero_args_start_local_web_console() {
+        let args = Args::try_parse_from(["ltr"]).expect("parse should succeed");
         assert!(args.command.is_none());
+        assert_eq!(args.web.web_addr.to_string(), "127.0.0.1:7836");
     }
 
     #[test]
-    fn parse_web_short_flag() {
-        let args = Args::try_parse_from(["bore", "-w"]).expect("parse should succeed");
-        assert!(args.web);
+    fn web_flag_is_removed() {
+        let err = Args::try_parse_from(["ltr", "--web"]).expect_err("--web is removed");
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
+        let err = Args::try_parse_from(["ltr", "-w"]).expect_err("-w is removed");
+        assert_eq!(err.kind(), ErrorKind::UnknownArgument);
     }
 
     #[test]
     fn parse_web_addr() {
-        let args = Args::try_parse_from(["bore", "--web", "--web-addr", "127.0.0.1:9000"])
+        let args = Args::try_parse_from(["ltr", "--web-addr", "127.0.0.1:9000"])
             .expect("parse should succeed");
-        assert_eq!(args.web_addr.to_string(), "127.0.0.1:9000");
+        assert_eq!(args.web.web_addr.to_string(), "127.0.0.1:9000");
+        assert!(args.command.is_none());
     }
 
     #[test]
     fn parse_existing_local_command() {
-        let args = Args::try_parse_from(["bore", "local", "8000", "--to", "bore.pub"])
+        let args = Args::try_parse_from(["ltr", "local", "8000", "--to", "bore.pub"])
             .expect("parse should succeed");
-        assert!(!args.web);
         assert!(args.command.is_some());
     }
 
     #[test]
-    fn parse_web_subcommand() {
-        let args = Args::try_parse_from(["bore", "web", "--web-addr", "127.0.0.1:9000"])
-            .expect("parse should succeed");
-        assert!(!args.web);
-        assert!(matches!(args.command, Some(Command::Web(_))));
+    fn web_subcommand_is_removed() {
+        let err = Args::try_parse_from(["ltr", "web"]).expect_err("web subcommand is removed");
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
     }
 
     #[test]
-    fn parse_remote_web_subcommand() {
-        let args = Args::try_parse_from(["bore", "web", "--remote", "--to", "host"])
+    fn parse_bundle_no_ssh() {
+        let args = Args::try_parse_from(["ltr", "bundle", "--to", "host", "--no-ssh"])
             .expect("parse should succeed");
-        let Some(Command::Web(web)) = args.command else {
-            panic!("expected web command");
+        let Some(Command::Bundle(bundle)) = args.command else {
+            panic!("expected bundle command");
         };
-        assert!(web.remote);
-        assert_eq!(web.to.as_deref(), Some("host"));
+        assert_eq!(bundle.to, "host");
+        assert!(bundle.no_ssh);
     }
 
     #[test]
-    fn parse_web_token() {
-        let args = Args::try_parse_from(["ltr", "web", "--web-token", "token"])
-            .expect("parse should succeed");
-        let Some(Command::Web(web)) = args.command else {
-            panic!("expected web command");
+    fn bundle_defaults_to_ssh_enabled() {
+        let args =
+            Args::try_parse_from(["ltr", "bundle", "--to", "host"]).expect("parse should succeed");
+        let Some(Command::Bundle(bundle)) = args.command else {
+            panic!("expected bundle command");
         };
-        assert_eq!(web.web_token.as_deref(), Some("token"));
+        assert!(!bundle.no_ssh);
+        assert_eq!(bundle.ssh_port, 2222);
     }
 
     #[test]
@@ -776,18 +558,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_home_subcommand() {
-        let args =
-            Args::try_parse_from(["bore", "home", "--to", "host"]).expect("parse should succeed");
-        let Some(Command::Bundle(bundle)) = args.command else {
-            panic!("expected bundle command");
-        };
-        assert_eq!(bundle.to, "host");
-        assert_eq!(bundle.web_port, 7836);
-        assert_eq!(bundle.ssh_port, 2222);
-    }
-
-    #[test]
     fn parse_bundle_subcommand() {
         let args =
             Args::try_parse_from(["ltr", "bundle", "--to", "host"]).expect("parse should succeed");
@@ -795,27 +565,24 @@ mod tests {
     }
 
     #[test]
-    fn bundle_is_visible_and_home_remains_alias() {
-        let command = Args::command();
-        assert!(command
-            .get_subcommands()
-            .any(|subcommand| subcommand.get_name() == "bundle"));
-        let args =
-            Args::try_parse_from(["bore", "home", "--to", "host"]).expect("parse should succeed");
-        assert!(matches!(args.command, Some(Command::Bundle(_))));
+    fn home_alias_is_removed() {
+        let err = Args::try_parse_from(["ltr", "home", "--to", "host"])
+            .expect_err("home alias should be removed");
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
     }
 
     #[test]
-    fn parse_server_tls_generation_flag() {
-        let args = Args::try_parse_from(["ltr", "server", "--tls"]).expect("parse should succeed");
+    fn parse_server_no_tls_flag() {
+        let args =
+            Args::try_parse_from(["ltr", "server", "--no-tls"]).expect("parse should succeed");
         let Some(Command::Server(server)) = args.command else {
             panic!("expected server command");
         };
-        assert!(server.tls);
+        assert!(server.no_tls);
     }
 
     #[test]
-    fn legacy_bore_secret_env_maps_to_ltr() {
+    fn bore_env_variables_are_not_promoted() {
         let _guard = ENV_GUARD
             .lock()
             .expect("environment lock should not be poisoned");
@@ -828,7 +595,7 @@ mod tests {
         let Some(Command::Server(server)) = args.command else {
             panic!("expected server command");
         };
-        assert_eq!(server.secret.as_deref(), Some("legacy-secret"));
+        assert_eq!(server.secret.as_deref(), None);
 
         match old_ltr {
             Some(value) => env::set_var("LTR_SECRET", value),
@@ -841,17 +608,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_web_remote_missing_to_fails() {
-        let err = Args::try_parse_from(["bore", "web", "--remote"]).expect_err("parse should fail");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-    }
-
-    #[test]
-    fn validate_remote_web_requires_loopback_addr() {
+    fn validate_bundle_requires_loopback_addr() {
         let args = Args::try_parse_from([
-            "bore",
-            "web",
-            "--remote",
+            "ltr",
+            "bundle",
             "--to",
             "host",
             "--web-addr",
@@ -864,9 +624,8 @@ mod tests {
 
     #[test]
     fn parse_existing_server_command() {
-        let args = Args::try_parse_from(["bore", "server", "--bind-addr", "0.0.0.0"])
+        let args = Args::try_parse_from(["ltr", "server", "--bind-addr", "0.0.0.0"])
             .expect("parse should succeed");
-        assert!(!args.web);
         assert!(args.command.is_some());
     }
 
@@ -877,11 +636,10 @@ mod tests {
     }
 
     #[test]
-    fn help_mentions_web_remote_and_bundle_usage() {
+    fn help_mentions_zero_arg_and_bundle_usage() {
         let help = Args::command().render_long_help().to_string();
-        assert!(help.contains("-w, --web"));
-        assert!(help.contains("ltr web --remote --to your-server.example --port 7836 --secret xxx"));
         assert!(help.contains("ltr bundle --to your-server.example --secret xxx"));
-        assert!(help.contains("npx @qinshower/ltr -- -w"));
+        assert!(help.contains("ltr bundle --to your-server.example --no-ssh"));
+        assert!(help.contains("npx @qinshower/ltr"));
     }
 }

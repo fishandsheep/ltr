@@ -1,6 +1,6 @@
 [package]
 name = "ltr-protocol"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
 description = "Frozen Bore v1-compatible framing and protocol messages for LTR."
 repository = "https://github.com/fishandsheep/ltr"

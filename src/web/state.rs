@@ -1,180 +1,23 @@
+//! Shared web state: composes the tunnel registry, per-tunnel runtimes, and
+//! console security into the API-facing façade.
+
 #![allow(missing_docs)]
 
-use std::{
-    collections::{HashMap, VecDeque},
-    fmt,
-    net::IpAddr,
-    str::FromStr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt, sync::Arc, time::Duration};
 
-use axum::http::StatusCode;
-use serde::{Deserialize, Serialize};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{
     sync::{mpsc, oneshot, Mutex, RwLock},
-    task::JoinHandle,
     time::sleep,
 };
 use uuid::Uuid;
 
-use crate::client::{run_local, LocalArgs, TunnelEvent, DEFAULT_MAX_ACTIVE_CONNECTIONS};
+use crate::client::{run_local, LocalArgs};
+
+use super::registry::{self, TunnelRegistry};
+use super::runtime::{TunnelRole, TunnelRuntime};
+use super::session::{conflict, normalize_config, not_found};
 
 const POLL_DELAY: Duration = Duration::from_millis(50);
-type IdentityKey = (String, u16, String, Option<u16>);
-
-#[derive(Default)]
-struct TunnelRegistry {
-    entries: HashMap<String, Arc<Mutex<TunnelRuntime>>>,
-    identities: HashMap<IdentityKey, String>,
-}
-
-/// Default maximum number of tunnel definitions held by the Web control plane.
-pub const DEFAULT_MAX_TUNNELS: usize = 64;
-
-/// Default maximum number of retained log lines per tunnel.
-pub const DEFAULT_MAX_LOG_LINES: usize = 500;
-
-/// Resource limits for the in-memory Web control plane.
-#[derive(Debug, Clone, Copy)]
-pub struct WebLimits {
-    pub max_tunnels: usize,
-    pub max_active_connections: usize,
-    pub max_log_lines: usize,
-}
-
-impl Default for WebLimits {
-    fn default() -> Self {
-        Self {
-            max_tunnels: DEFAULT_MAX_TUNNELS,
-            max_active_connections: DEFAULT_MAX_ACTIVE_CONNECTIONS,
-            max_log_lines: DEFAULT_MAX_LOG_LINES,
-        }
-    }
-}
-
-impl WebLimits {
-    fn normalized(self) -> Self {
-        Self {
-            max_tunnels: self.max_tunnels.max(1),
-            max_active_connections: self.max_active_connections.max(1),
-            max_log_lines: self.max_log_lines.max(1),
-        }
-    }
-}
-
-/// Tunnel configuration accepted by the web API.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct TunnelConfig {
-    pub name: String,
-    pub local_port: u16,
-    pub to: String,
-    pub port: Option<u16>,
-    pub local_host: String,
-    pub secret: Option<String>,
-}
-
-impl fmt::Debug for TunnelConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("TunnelConfig")
-            .field("name", &self.name)
-            .field("local_port", &self.local_port)
-            .field("to", &self.to)
-            .field("port", &self.port)
-            .field("local_host", &self.local_host)
-            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
-            .finish()
-    }
-}
-
-/// Public tunnel configuration returned by the web API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PublicTunnelConfig {
-    pub name: String,
-    pub local_port: u16,
-    pub to: String,
-    pub port: Option<u16>,
-    pub local_host: String,
-}
-
-/// Tunnel lifecycle state.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TunnelStatus {
-    Stopped,
-    Starting,
-    Running,
-    Failed,
-}
-
-/// Public tunnel class.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum TunnelKind {
-    User,
-    System,
-}
-
-/// Web console runtime mode.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum SessionMode {
-    Local,
-    RemoteWeb,
-    Home,
-}
-
-/// Session metadata returned by the web API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionInfo {
-    pub mode: SessionMode,
-    pub warnings: Vec<String>,
-    pub loopback_only: bool,
-    pub web_remote_url: Option<String>,
-    pub ssh_remote_endpoint: Option<String>,
-}
-
-impl SessionInfo {
-    pub fn local() -> Self {
-        Self {
-            mode: SessionMode::Local,
-            warnings: Vec::new(),
-            loopback_only: false,
-            web_remote_url: None,
-            ssh_remote_endpoint: None,
-        }
-    }
-}
-
-/// Tunnel information returned by the web API.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TunnelInfo {
-    pub id: String,
-    pub config: PublicTunnelConfig,
-    pub status: TunnelStatus,
-    pub remote_port: Option<u16>,
-    pub error: Option<String>,
-    pub has_secret: bool,
-    pub kind: TunnelKind,
-    pub locked: bool,
-    pub display_url: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// Static spec for system tunnels.
-#[derive(Debug, Clone)]
-pub struct SystemTunnelSpec {
-    pub role: SystemTunnelRole,
-    pub config: TunnelConfig,
-    pub display_url: Option<String>,
-}
-
-/// Predefined system tunnel roles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SystemTunnelRole {
-    WebConsole,
-    Ssh,
-}
 
 /// Shared web state.
 #[derive(Clone)]
@@ -184,22 +27,7 @@ pub struct WebState {
     web_token: Arc<Option<String>>,
     web_tls: Arc<Option<WebTlsConfig>>,
     limits: Arc<WebLimits>,
-}
-
-#[derive(Clone)]
-pub struct WebTlsConfig {
-    pub cert_pem: Vec<u8>,
-    pub key_pem: Vec<u8>,
-}
-
-impl fmt::Debug for WebTlsConfig {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("WebTlsConfig")
-            .field("cert_pem", &"[redacted]")
-            .field("key_pem", &"[redacted]")
-            .finish()
-    }
+    store_path: Option<Arc<std::path::PathBuf>>,
 }
 
 impl fmt::Debug for WebState {
@@ -227,47 +55,6 @@ impl Default for WebState {
     }
 }
 
-/// Structured state-layer error for HTTP mapping.
-#[derive(Debug, Clone)]
-pub struct StateError {
-    pub status: StatusCode,
-    pub message: String,
-}
-
-impl fmt::Display for StateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for StateError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TunnelRole {
-    User,
-    WebConsole,
-    Ssh,
-}
-
-#[derive(Debug)]
-struct TunnelRuntime {
-    id: String,
-    config: TunnelConfig,
-    status: TunnelStatus,
-    remote_port: Option<u16>,
-    error: Option<String>,
-    kind: TunnelKind,
-    role: TunnelRole,
-    locked: bool,
-    display_url: Option<String>,
-    created_at: String,
-    updated_at: String,
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    handle: Option<JoinHandle<()>>,
-    logs: VecDeque<String>,
-    max_log_lines: usize,
-}
-
 impl WebState {
     pub fn new(session: SessionInfo) -> Self {
         Self::with_web_token(session, None)
@@ -291,12 +78,41 @@ impl WebState {
         web_tls: Option<WebTlsConfig>,
         limits: WebLimits,
     ) -> Self {
+        Self::with_limits_and_store(session, web_token, web_tls, limits, None)
+    }
+
+    /// Build state that persists user tunnels to `store_path`.
+    pub fn with_limits_and_store(
+        session: SessionInfo,
+        web_token: Option<String>,
+        web_tls: Option<WebTlsConfig>,
+        limits: WebLimits,
+        store_path: Option<std::path::PathBuf>,
+    ) -> Self {
+        let limits = limits.normalized();
+        let mut registry = TunnelRegistry::default();
+        if let Some(path) = &store_path {
+            for (id, config, created_at) in registry::load_persisted(path) {
+                let Ok(config) = registry::validate_persisted(&config) else {
+                    continue;
+                };
+                let runtime = registry::runtime_from_persisted(
+                    id.clone(),
+                    config.clone(),
+                    created_at,
+                    limits.max_log_lines,
+                );
+                registry.insert(id, &config, runtime);
+            }
+        }
+
         Self {
-            tunnels: Arc::new(RwLock::new(TunnelRegistry::default())),
+            tunnels: Arc::new(RwLock::new(registry)),
             session: Arc::new(RwLock::new(session)),
             web_token: Arc::new(web_token),
             web_tls: Arc::new(web_tls),
-            limits: Arc::new(limits.normalized()),
+            limits: Arc::new(limits),
+            store_path: store_path.map(Arc::new),
         }
     }
 
@@ -318,6 +134,33 @@ impl WebState {
 
     pub async fn session(&self) -> SessionInfo {
         self.session.read().await.clone()
+    }
+
+    /// Persist user tunnels if a store path is configured.
+    async fn persist(&self) {
+        let Some(path) = self.store_path.as_ref() else {
+            return;
+        };
+        let tunnels = self.tunnels.read().await;
+        let mut snapshot = Vec::new();
+        for entry in tunnels.entries.values() {
+            let runtime = entry.lock().await;
+            if runtime.role != TunnelRole::User {
+                continue;
+            }
+            snapshot.push((
+                runtime.id.clone(),
+                runtime.config.clone(),
+                runtime.created_at.clone(),
+            ));
+        }
+        drop(tunnels);
+        if let Err(err) = registry::save_persisted(path, &snapshot) {
+            eprintln!(
+                "Warning: could not persist tunnels to {}: {err}",
+                path.display()
+            );
+        }
     }
 
     pub async fn list_tunnels(&self) -> Vec<TunnelInfo> {
@@ -408,6 +251,9 @@ impl WebState {
             runtime.push_log("tunnel config updated".to_string());
             tunnels.identities.remove(&old_key);
             tunnels.identities.insert(config_key, id.to_string());
+            drop(runtime);
+            drop(tunnels);
+            self.persist().await;
             return Ok(());
         }
     }
@@ -472,7 +318,7 @@ impl WebState {
             runtime.error = None;
             runtime.touch();
             let tunnel_name = runtime.config.name.clone();
-            runtime.push_log(format!("starting tunnel {}", tunnel_name));
+            runtime.push_log(format!("starting tunnel {tunnel_name}"));
             runtime.shutdown_tx = Some(shutdown_tx);
             let mut local_args = LocalArgs::from(runtime.config.clone());
             local_args.max_connections = self.limits.max_active_connections;
@@ -569,8 +415,9 @@ impl WebState {
             runtime.config.identity_key()
         };
         let mut tunnels = self.tunnels.write().await;
-        tunnels.entries.remove(id);
-        tunnels.identities.remove(&identity_key);
+        tunnels.remove(id, &identity_key);
+        drop(tunnels);
+        self.persist().await;
         Ok(())
     }
 
@@ -662,18 +509,18 @@ impl WebState {
             )));
         }
 
-        let now = now_rfc3339();
+        let now = super::session::now_rfc3339();
         let id = Uuid::new_v4().to_string();
         let runtime = TunnelRuntime {
             id: id.clone(),
-            config,
+            config: config.clone(),
             status: TunnelStatus::Stopped,
             remote_port: None,
             error: None,
             kind: if role == TunnelRole::User {
-                TunnelKind::User
+                super::session::TunnelKind::User
             } else {
-                TunnelKind::System
+                super::session::TunnelKind::System
             },
             role,
             locked,
@@ -682,17 +529,19 @@ impl WebState {
             updated_at: now,
             shutdown_tx: None,
             handle: None,
-            logs: VecDeque::new(),
+            logs: std::collections::VecDeque::new(),
             max_log_lines: self.limits.max_log_lines,
+            stats: Default::default(),
         };
-        tunnels.identities.insert(config_key, id.clone());
-        tunnels
-            .entries
-            .insert(id.clone(), Arc::new(Mutex::new(runtime)));
+        tunnels.insert(id.clone(), &config, runtime);
+        drop(tunnels);
+        if role == TunnelRole::User {
+            self.persist().await;
+        }
         Ok(id)
     }
 
-    async fn entry(&self, id: &str) -> Result<Arc<Mutex<TunnelRuntime>>, StateError> {
+    pub(crate) async fn entry(&self, id: &str) -> Result<Arc<Mutex<TunnelRuntime>>, StateError> {
         self.tunnels
             .read()
             .await
@@ -716,194 +565,31 @@ async fn update_session_remote(state: &WebState, role: TunnelRole, to: &str, rem
     }
 }
 
-impl TunnelRuntime {
-    fn view(&self) -> TunnelInfo {
-        TunnelInfo {
-            id: self.id.clone(),
-            config: self.config.public(),
-            status: self.status,
-            remote_port: self.remote_port,
-            error: self.error.clone(),
-            has_secret: self.config.secret.is_some(),
-            kind: self.kind,
-            locked: self.locked,
-            display_url: self.display_url.clone(),
-            created_at: self.created_at.clone(),
-            updated_at: self.updated_at.clone(),
-        }
-    }
+// ---------------------------------------------------------------------------
+// Re-exports: the public web-state surface is importable from this module.
+// ---------------------------------------------------------------------------
 
-    fn apply_event(&mut self, event: TunnelEvent) -> Option<(TunnelRole, String, u16)> {
-        match event {
-            TunnelEvent::Log(message) => {
-                self.push_log(message);
-                None
-            }
-            TunnelEvent::Started { remote_port } => {
-                self.status = TunnelStatus::Running;
-                self.remote_port = remote_port;
-                self.error = None;
-                self.touch();
-                if let Some(remote_port) = remote_port {
-                    self.push_log(format!("remote port assigned: {remote_port}"));
-                }
-                remote_port.and_then(|remote_port| {
-                    (self.role != TunnelRole::User)
-                        .then(|| (self.role, self.config.to.clone(), remote_port))
-                })
-            }
-            TunnelEvent::Stopped => {
-                self.status = TunnelStatus::Stopped;
-                self.shutdown_tx = None;
-                self.touch();
-                self.push_log("tunnel stopped".to_string());
-                None
-            }
-            TunnelEvent::Failed(message) => {
-                self.status = TunnelStatus::Failed;
-                self.remote_port = None;
-                self.error = Some(message.clone());
-                self.shutdown_tx = None;
-                self.touch();
-                self.push_log(format!("error: {message}"));
-                None
-            }
-        }
-    }
+pub use super::registry::default_tunnels_path;
+pub use super::session::{
+    is_loopback_host, PublicTunnelConfig, SessionInfo, SessionMode, StateError, SystemTunnelRole,
+    SystemTunnelSpec, TunnelConfig, TunnelInfo, TunnelKind, TunnelStatus, WebLimits,
+    DEFAULT_MAX_LOG_LINES, DEFAULT_MAX_TUNNELS,
+};
 
-    fn push_log(&mut self, message: String) {
-        self.logs.push_back(message);
-        while self.logs.len() > self.max_log_lines {
-            self.logs.pop_front();
-        }
-        self.updated_at = now_rfc3339();
-    }
-
-    fn touch(&mut self) {
-        self.updated_at = now_rfc3339();
-    }
+/// TLS material for the web console listener.
+#[derive(Clone)]
+pub struct WebTlsConfig {
+    pub cert_pem: Vec<u8>,
+    pub key_pem: Vec<u8>,
 }
 
-impl TunnelConfig {
-    fn public(&self) -> PublicTunnelConfig {
-        PublicTunnelConfig {
-            name: self.name.clone(),
-            local_port: self.local_port,
-            to: self.to.clone(),
-            port: self.port,
-            local_host: self.local_host.clone(),
-        }
-    }
-
-    fn identity_key(&self) -> (String, u16, String, Option<u16>) {
-        (
-            self.local_host.clone(),
-            self.local_port,
-            self.to.clone(),
-            self.port,
-        )
-    }
-}
-
-impl From<TunnelConfig> for LocalArgs {
-    fn from(value: TunnelConfig) -> Self {
-        Self {
-            local_port: value.local_port,
-            local_host: value.local_host,
-            to: value.to,
-            port: value.port.unwrap_or(0),
-            secret: value.secret,
-            tls: false,
-            tls_ca: None,
-            tls_fingerprint: None,
-            tls_server_name: None,
-            tls_client_cert: None,
-            tls_client_key: None,
-            max_connections: DEFAULT_MAX_ACTIVE_CONNECTIONS,
-        }
-    }
-}
-
-impl From<SystemTunnelRole> for TunnelRole {
-    fn from(value: SystemTunnelRole) -> Self {
-        match value {
-            SystemTunnelRole::WebConsole => TunnelRole::WebConsole,
-            SystemTunnelRole::Ssh => TunnelRole::Ssh,
-        }
-    }
-}
-
-fn normalize_config(
-    mut config: TunnelConfig,
-    loopback_only: bool,
-) -> Result<TunnelConfig, StateError> {
-    config.name = config.name.trim().to_string();
-    config.to = config.to.trim().to_string();
-    config.local_host = config.local_host.trim().to_string();
-    config.secret = config
-        .secret
-        .as_ref()
-        .map(|secret| secret.trim().to_string())
-        .filter(|secret| !secret.is_empty());
-
-    if config.name.is_empty() {
-        return Err(bad_request("name cannot be empty"));
-    }
-    if config.local_port == 0 {
-        return Err(bad_request("local_port must be a valid port"));
-    }
-    if config.to.is_empty() {
-        return Err(bad_request("to cannot be empty"));
-    }
-    if config.local_host.is_empty() {
-        return Err(bad_request("local_host cannot be empty"));
-    }
-    if loopback_only && !is_loopback_host(&config.local_host) {
-        return Err(bad_request(
-            "remote web mode only allows loopback local_host targets",
-        ));
-    }
-    if matches!(config.port, Some(0)) {
-        return Err(bad_request("port must be a valid port"));
-    }
-
-    Ok(config)
-}
-
-pub fn is_loopback_host(host: &str) -> bool {
-    if matches!(host, "localhost" | "127.0.0.1" | "::1") {
-        return true;
-    }
-
-    IpAddr::from_str(host)
-        .map(|addr| addr.is_loopback())
-        .unwrap_or(false)
-}
-
-fn now_rfc3339() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-fn bad_request(message: impl Into<String>) -> StateError {
-    StateError {
-        status: StatusCode::BAD_REQUEST,
-        message: message.into(),
-    }
-}
-
-fn not_found(message: impl Into<String>) -> StateError {
-    StateError {
-        status: StatusCode::NOT_FOUND,
-        message: message.into(),
-    }
-}
-
-fn conflict(message: impl Into<String>) -> StateError {
-    StateError {
-        status: StatusCode::CONFLICT,
-        message: message.into(),
+impl fmt::Debug for WebTlsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebTlsConfig")
+            .field("cert_pem", &"[redacted]")
+            .field("key_pem", &"[redacted]")
+            .finish()
     }
 }
 
@@ -1087,6 +773,45 @@ mod tests {
         assert_eq!(logs.len(), DEFAULT_MAX_LOG_LINES);
         assert_eq!(logs.first().expect("first log"), "line-20");
         assert_eq!(logs.last().expect("last log"), "line-519");
+    }
+
+    #[tokio::test]
+    async fn user_tunnels_survive_restart_via_store() {
+        let store =
+            std::env::temp_dir().join(format!("ltr-tunnels-test-{}.toml", uuid::Uuid::new_v4()));
+        let session = SessionInfo::local();
+        let limits = super::WebLimits::default();
+        let first = WebState::with_limits_and_store(
+            session.clone(),
+            None,
+            None,
+            limits,
+            Some(store.clone()),
+        );
+        let id = first
+            .create_tunnel(TunnelConfig {
+                secret: Some("hush".to_string()),
+                ..config("persisted")
+            })
+            .await
+            .expect("create should work");
+        let _ = first
+            .create_system_tunnel(super::SystemTunnelSpec {
+                role: SystemTunnelRole::WebConsole,
+                config: config("Web Console"),
+                display_url: None,
+            })
+            .await;
+
+        let second =
+            WebState::with_limits_and_store(session, None, None, limits, Some(store.clone()));
+        let tunnels = second.list_tunnels().await;
+        assert_eq!(tunnels.len(), 1, "system tunnels are not persisted");
+        assert_eq!(tunnels[0].id, id);
+        assert_eq!(tunnels[0].config.name, "persisted");
+        assert!(tunnels[0].has_secret, "secret round-trips on disk");
+        assert_eq!(tunnels[0].status, TunnelStatus::Stopped);
+        let _ = std::fs::remove_file(&store);
     }
 
     #[test]

@@ -4,6 +4,7 @@
     "npm/*"
   ],
   "scripts": {
+    "i18n:check": "node npm/scripts/check-i18n-parity.mjs",
     "npm:check": "node npm/scripts/check-release.mjs",
     "npm:pack:dry-run": "node npm/scripts/pack-dry-run.mjs"
   },

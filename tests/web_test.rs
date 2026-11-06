@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use axum::{
     body::{to_bytes, Body},
-    http::{Request, StatusCode},
+    http::{header, Request, StatusCode},
 };
 use ltr_cli::{
     server::Server,
@@ -46,6 +46,13 @@ async fn wait_for_control_port_closed() -> Result<()> {
         time::sleep(Duration::from_millis(10)).await;
     }
     Err(anyhow!("previous server did not release control port"))
+}
+
+async fn free_port() -> Result<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
 }
 
 async fn spawn_server(secret: Option<&str>) -> Result<ServerGuard> {
@@ -176,6 +183,57 @@ async fn remote_api_requires_bearer_token() {
         .await
         .expect("request should succeed");
     assert_eq!(authorized.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn index_and_assets_use_revalidation_caching() {
+    let app = router(WebState::default());
+
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .expect("request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-store"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/js/app.mjs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-cache"
+    );
+    let etag = response
+        .headers()
+        .get(header::ETAG)
+        .expect("asset should carry an ETag")
+        .to_str()
+        .expect("ETag should be ASCII")
+        .to_string();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/js/app.mjs")
+                .header(header::IF_NONE_MATCH, etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("request should succeed");
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
 }
 
 #[tokio::test]
@@ -384,6 +442,7 @@ async fn tunnel_crud_and_logs_api() -> Result<()> {
 async fn managed_remote_web_starts_and_stops_system_tunnel() -> Result<()> {
     let _guard = SERIAL_GUARD.lock().await;
     let _server = spawn_server(None).await?;
+    let web_port = free_port().await?;
     let state = WebState::new(remote_session(SessionMode::RemoteWeb));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -399,11 +458,11 @@ async fn managed_remote_web_starts_and_stops_system_tunnel() -> Result<()> {
                 name: "Web Console".to_string(),
                 local_port: 9,
                 to: "localhost".to_string(),
-                port: Some(7836),
+                port: Some(web_port),
                 local_host: "127.0.0.1".to_string(),
                 secret: None,
             },
-            display_url: Some("https://localhost:7836".to_string()),
+            display_url: Some(format!("https://localhost:{web_port}")),
         }],
         async move {
             let _ = shutdown_rx.await;
@@ -423,7 +482,7 @@ async fn managed_remote_web_starts_and_stops_system_tunnel() -> Result<()> {
     let session = state.session().await;
     assert_eq!(
         session.web_remote_url.as_deref(),
-        Some("https://localhost:7836")
+        Some(format!("https://localhost:{web_port}").as_str())
     );
 
     let _ = shutdown_tx.send(());
@@ -440,6 +499,7 @@ async fn managed_remote_web_uses_fallback_web_port_for_system_tunnel() -> Result
     let _server = spawn_server(None).await?;
     let occupied = TcpListener::bind("127.0.0.1:0").await?;
     let occupied_addr = occupied.local_addr()?;
+    let web_port = free_port().await?;
     let state = WebState::new(remote_session(SessionMode::RemoteWeb));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -455,11 +515,11 @@ async fn managed_remote_web_uses_fallback_web_port_for_system_tunnel() -> Result
                 name: "Web Console".to_string(),
                 local_port: occupied_addr.port(),
                 to: "localhost".to_string(),
-                port: Some(7836),
+                port: Some(web_port),
                 local_host: "127.0.0.1".to_string(),
                 secret: None,
             },
-            display_url: Some("https://localhost:7836".to_string()),
+            display_url: Some(format!("https://localhost:{web_port}")),
         }],
         async move {
             let _ = shutdown_rx.await;
@@ -488,6 +548,8 @@ async fn managed_remote_web_uses_fallback_web_port_for_system_tunnel() -> Result
 async fn managed_home_starts_two_locked_system_tunnels() -> Result<()> {
     let _guard = SERIAL_GUARD.lock().await;
     let _server = spawn_server(None).await?;
+    let web_port = free_port().await?;
+    let ssh_port = free_port().await?;
     let state = WebState::new(remote_session(SessionMode::Home));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
@@ -504,11 +566,11 @@ async fn managed_home_starts_two_locked_system_tunnels() -> Result<()> {
                     name: "Web Console".to_string(),
                     local_port: 9,
                     to: "localhost".to_string(),
-                    port: Some(7836),
+                    port: Some(web_port),
                     local_host: "127.0.0.1".to_string(),
                     secret: None,
                 },
-                display_url: Some("https://localhost:7836".to_string()),
+                display_url: Some(format!("https://localhost:{web_port}")),
             },
             SystemTunnelSpec {
                 role: SystemTunnelRole::Ssh,
@@ -516,11 +578,11 @@ async fn managed_home_starts_two_locked_system_tunnels() -> Result<()> {
                     name: "SSH".to_string(),
                     local_port: 9,
                     to: "localhost".to_string(),
-                    port: Some(2222),
+                    port: Some(ssh_port),
                     local_host: "127.0.0.1".to_string(),
                     secret: None,
                 },
-                display_url: Some("localhost:2222".to_string()),
+                display_url: Some(format!("localhost:{ssh_port}")),
             },
         ],
         async move {
@@ -544,11 +606,11 @@ async fn managed_home_starts_two_locked_system_tunnels() -> Result<()> {
     let session = state.session().await;
     assert_eq!(
         session.web_remote_url.as_deref(),
-        Some("https://localhost:7836")
+        Some(format!("https://localhost:{web_port}").as_str())
     );
     assert_eq!(
         session.ssh_remote_endpoint.as_deref(),
-        Some("localhost:2222")
+        Some(format!("localhost:{ssh_port}").as_str())
     );
 
     let _ = shutdown_tx.send(());

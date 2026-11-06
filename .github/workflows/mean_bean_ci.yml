@@ -90,11 +90,6 @@ jobs:
         channel: [stable]
         target:
           - aarch64-unknown-linux-musl
-          - arm-unknown-linux-musleabi
-          - arm-unknown-linux-gnueabi
-          - armv7-unknown-linux-gnueabihf
-          - armv7-unknown-linux-musleabihf
-          - i686-unknown-linux-musl
           - x86_64-unknown-linux-musl
 
   windows:
@@ -121,7 +116,6 @@ jobs:
         channel: [stable]
         target:
           # MSVC
-          - i686-pc-windows-msvc
           - x86_64-pc-windows-msvc
           # GNU: You typically only need to test Windows GNU if you're
           # specifically targetting it, and it can cause issues with some

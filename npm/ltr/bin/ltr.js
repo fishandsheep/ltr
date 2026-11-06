@@ -7,54 +7,20 @@ const path = require("path");
 const packages = {
   "darwin arm64": "@qinshower/ltr-darwin-arm64",
   "darwin x64": "@qinshower/ltr-darwin-x64",
-  "linux arm": {
-    glibc: {
-      6: "@qinshower/ltr-linux-arm-gnueabi",
-      7: "@qinshower/ltr-linux-armv7-gnueabihf",
-      default: "@qinshower/ltr-linux-arm-gnueabi"
-    },
-    musl: {
-      6: "@qinshower/ltr-linux-arm-musleabi",
-      7: "@qinshower/ltr-linux-armv7-musleabihf",
-      default: "@qinshower/ltr-linux-arm-musleabi"
-    }
-  },
   "linux arm64": "@qinshower/ltr-linux-arm64-musl",
-  "linux ia32": "@qinshower/ltr-linux-ia32-musl",
   "linux x64": "@qinshower/ltr-linux-x64-musl",
-  "win32 ia32": "@qinshower/ltr-win32-ia32-msvc",
   "win32 x64": "@qinshower/ltr-win32-x64-msvc"
 };
-
-function isMuslLinux() {
-  if (process.platform !== "linux") {
-    return false;
-  }
-  if (!process.report || typeof process.report.getReport !== "function") {
-    return true;
-  }
-  try {
-    return !process.report.getReport().header.glibcVersionRuntime;
-  } catch {
-    return true;
-  }
-}
 
 function selectedPackage() {
   const key = `${process.platform} ${process.arch}`;
   const value = packages[key];
 
-  if (!value) {
+  if (typeof value !== "string") {
     return null;
   }
 
-  if (typeof value === "string") {
-    return value;
-  }
-
-  const family = isMuslLinux() ? value.musl : value.glibc;
-  const armVersion = Number(process.config && process.config.variables && process.config.variables.arm_version);
-  return family[armVersion] || family.default;
+  return value;
 }
 
 function packageBinary(packageName) {

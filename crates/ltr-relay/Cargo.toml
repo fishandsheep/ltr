@@ -1,6 +1,6 @@
 [package]
 name = "ltr-relay"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
 description = "Relay, client, server, authentication, and transport layers for LTR."
 repository = "https://github.com/fishandsheep/ltr"
@@ -28,4 +28,4 @@ tokio-rustls = "0.26.4"
 tokio-util = { version = "0.7.18", features = ["codec"] }
 tracing = "0.1.44"
 uuid = { version = "1.23.4", features = ["serde", "v4"] }
-ltr-protocol = { version = "0.0.1", path = "../ltr-protocol" }
+ltr-protocol = { version = "0.1.0", path = "../ltr-protocol" }

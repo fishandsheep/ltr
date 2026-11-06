@@ -4,8 +4,8 @@ use std::{future::Future, net::SocketAddr};
 
 use anyhow::{anyhow, Result};
 use axum::{
-    extract::{Request, State},
-    http::{header, StatusCode},
+    extract::{Path, Request, State},
+    http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::get,
@@ -19,18 +19,76 @@ use tokio::{net::TcpListener, sync::oneshot};
 pub mod api;
 /// Persistent Web credentials.
 pub mod credentials;
+mod registry;
+mod runtime;
+mod session;
 /// In-memory state and tunnel metadata.
 pub mod state;
 pub mod tunnel;
 
 pub use state::{
-    is_loopback_host, SessionInfo, SessionMode, SystemTunnelRole, SystemTunnelSpec, TunnelConfig,
-    TunnelInfo, TunnelKind, TunnelStatus, WebLimits, WebState, WebTlsConfig,
+    default_tunnels_path, is_loopback_host, SessionInfo, SessionMode, StateError, SystemTunnelRole,
+    SystemTunnelSpec, TunnelConfig, TunnelInfo, TunnelKind, TunnelStatus, WebLimits, WebState,
+    WebTlsConfig,
 };
 
 const INDEX_HTML: &str = include_str!("static/index.html");
-const APP_JS: &str = include_str!("static/app.js");
 const STYLE_CSS: &str = include_str!("static/style.css");
+
+/// Embedded static asset: request path under `/js/` and MIME type.
+struct JsAsset {
+    path: &'static str,
+    content_type: &'static str,
+    body: &'static str,
+}
+
+const JS_ASSETS: &[JsAsset] = &[
+    asset("app.mjs", include_str!("static/js/app.mjs")),
+    asset("lib.mjs", include_str!("static/js/lib.mjs")),
+    asset("i18n.mjs", include_str!("static/js/i18n.mjs")),
+    asset("api.mjs", include_str!("static/js/api.mjs")),
+    asset(
+        "vendor/preact.mjs",
+        include_str!("static/js/vendor/preact.mjs"),
+    ),
+    asset(
+        "vendor/hooks.mjs",
+        include_str!("static/js/vendor/hooks.mjs"),
+    ),
+    asset("vendor/htm.mjs", include_str!("static/js/vendor/htm.mjs")),
+    asset(
+        "components/App.mjs",
+        include_str!("static/js/components/App.mjs"),
+    ),
+    asset(
+        "components/AuthPanel.mjs",
+        include_str!("static/js/components/AuthPanel.mjs"),
+    ),
+    asset(
+        "components/ConfirmDialog.mjs",
+        include_str!("static/js/components/ConfirmDialog.mjs"),
+    ),
+    asset(
+        "components/Topology.mjs",
+        include_str!("static/js/components/Topology.mjs"),
+    ),
+    asset(
+        "components/TunnelCard.mjs",
+        include_str!("static/js/components/TunnelCard.mjs"),
+    ),
+    asset(
+        "components/TunnelDialog.mjs",
+        include_str!("static/js/components/TunnelDialog.mjs"),
+    ),
+];
+
+const fn asset(path: &'static str, body: &'static str) -> JsAsset {
+    JsAsset {
+        path,
+        content_type: "application/javascript; charset=utf-8",
+        body,
+    }
+}
 
 /// Web HTTP server config.
 #[derive(Debug, Clone)]
@@ -262,8 +320,8 @@ pub fn router(state: WebState) -> Router {
 
     Router::new()
         .route("/", get(index))
-        .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
+        .route("/js/*path", get(js_asset))
         .nest("/api", api)
         .with_state(state)
 }
@@ -293,25 +351,63 @@ async fn authorize_api(State(state): State<WebState>, request: Request, next: Ne
     }
 }
 
-async fn index() -> Html<&'static str> {
-    Html(INDEX_HTML)
-}
-
-async fn app_js() -> impl IntoResponse {
+async fn index() -> impl IntoResponse {
     (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
-        APP_JS,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        Html(INDEX_HTML),
     )
 }
 
-async fn style_css() -> impl IntoResponse {
+/// Strong ETag for an embedded asset body. Assets change only when the
+/// binary changes, so a content hash is stable per build.
+fn asset_etag(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("\"{}\"", hex::encode(Sha256::digest(body.as_bytes())))
+}
+
+fn serve_asset(headers: &HeaderMap, content_type: &str, body: &'static str) -> Response {
+    let etag = asset_etag(body);
+    let revalidated = headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|if_none_match| {
+            if_none_match
+                .split(',')
+                .map(str::trim)
+                .any(|candidate| candidate == etag || candidate == "*")
+        });
+    if revalidated {
+        return (
+            StatusCode::NOT_MODIFIED,
+            [
+                (axum::http::header::ETAG, etag.as_str()),
+                (axum::http::header::CACHE_CONTROL, "no-cache"),
+            ],
+        )
+            .into_response();
+    }
     (
-        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        STYLE_CSS,
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (axum::http::header::ETAG, etag.as_str()),
+            // Stable URLs across builds: browsers must revalidate instead of
+            // serving stale assets after an upgrade.
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
     )
+        .into_response()
+}
+
+async fn js_asset(headers: HeaderMap, Path(path): Path<String>) -> Response {
+    match JS_ASSETS.iter().find(|asset| asset.path == path) {
+        Some(asset) => serve_asset(&headers, asset.content_type, asset.body),
+        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+async fn style_css(headers: HeaderMap) -> Response {
+    serve_asset(&headers, "text/css; charset=utf-8", STYLE_CSS)
 }
 
 #[cfg(test)]

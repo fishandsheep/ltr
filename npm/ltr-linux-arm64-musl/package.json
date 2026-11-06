@@ -1,6 +1,6 @@
 {
   "name": "@qinshower/ltr-linux-arm64-musl",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "The Linux arm64 musl binary for LTR.",
   "license": "MIT",
   "repository": {

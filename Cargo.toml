@@ -1,8 +1,8 @@
 [package]
 name = "ltr-cli"
-version = "0.0.1"
+version = "0.1.0"
 license = "MIT"
-description = "A Bore-compatible TCP tunnel in Rust with Web and npm/Bun distribution."
+description = "Async-Rust TCP tunnel exposing local ports through a remote relay: encrypted by default, Web console included, Bore v1 protocol compatible."
 repository = "https://github.com/fishandsheep/ltr"
 documentation = "https://docs.rs/ltr-cli"
 keywords = ["network", "cli", "tunnel", "tcp"]
@@ -14,15 +14,11 @@ default-run = "ltr"
 
 [workspace]
 resolver = "2"
-members = [".", "crates/bore-cli", "crates/ltr-protocol", "crates/ltr-relay"]
+members = [".", "crates/ltr-protocol", "crates/ltr-relay"]
 
 [[bin]]
 name = "ltr"
 path = "src/main.rs"
-
-[[bin]]
-name = "bore"
-path = "src/bore_main.rs"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
@@ -36,6 +32,7 @@ hex = "0.4.3"
 hmac = "0.13.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+toml = "0.9"
 sha2 = "0.11.0"
 socket2 = "0.6.4"
 time = { version = "0.3.44", features = ["formatting"] }
@@ -48,8 +45,8 @@ rcgen = "0.14.7"
 rustls = "0.23.43"
 rustls-pemfile = "2.2.0"
 tokio-rustls = "0.26.4"
-ltr-protocol = { version = "0.0.1", path = "crates/ltr-protocol" }
-ltr-relay = { version = "0.0.1", path = "crates/ltr-relay" }
+ltr-protocol = { version = "0.1.0", path = "crates/ltr-protocol" }
+ltr-relay = { version = "0.1.0", path = "crates/ltr-relay" }
 
 [dev-dependencies]
 rstest = "0.26.1"

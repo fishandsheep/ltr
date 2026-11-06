@@ -1,245 +1,114 @@
 ---
 name: LTR Web Console
-description: `ltr --web` / `ltr web` 的本地 TCP 隧道控制面
+description: `ltr` 控制台的「极简信号」设计系统
 colors:
-  bg: "#f4f4f1"
-  bg-accent: "#e8ecef"
-  surface: "#ffffff"
-  surface-muted: "#f7f8f8"
-  surface-strong: "#f1f4f5"
-  ink: "#172126"
-  muted: "#556169"
-  muted-strong: "#6a7881"
-  line: "#ced6db"
-  line-strong: "#aab6be"
-  accent: "#0f5f78"
-  accent-strong: "#0b4c60"
-  accent-soft: "#d9e9ee"
-  ok: "#11643e"
-  ok-soft: "#d9ece2"
-  warn: "#9a3f20"
-  warn-soft: "#f2e0d8"
-  danger: "#8c321d"
-  danger-strong: "#712818"
-  danger-line: "#d8b4a8"
-  danger-line-strong: "#c99282"
-  secondary-hover: "#e8edef"
+  bg: "#fafafa"
+  ink: "#0c0c0e"
+  panel: "#ffffff"
+  line: "#e6e6e9"
+  line-strong: "#c8c8cf"
+  muted: "#6f6f78"
+  faint: "#a5a5ad"
+  accent: "#5b3df5"
+  accent-deep: "#4328d4"
+  accent-soft: "#efecfe"
+  ok: "#0c7a43"
+  ok-soft: "#e7f4ed"
+  warn: "#c23b12"
+  warn-soft: "#fbebe4"
   log-bg: "#111417"
-  log-line: "#243039"
   log-ink: "#edf2f5"
-  top-wash: "#e8ecef8c"
 typography:
   display:
-    fontFamily: '"SF Pro Text", "Segoe UI", system-ui, sans-serif'
-    fontSize: "clamp(2rem, 4vw, 3.25rem)"
-    fontWeight: 700
+    fontFamily: '"Inter", "SF Pro Text", "Noto Sans SC", system-ui, sans-serif'
+    fontSize: "30px"
+    fontWeight: 800
+    letterSpacing: "-0.03em"
     lineHeight: 1
-    letterSpacing: "-0.02em"
   headline:
-    fontFamily: '"SF Pro Text", "Segoe UI", system-ui, sans-serif'
-    fontSize: "1.125rem"
-    fontWeight: 700
-    lineHeight: 1.2
-    letterSpacing: "-0.02em"
+    fontFamily: '"Inter", "SF Pro Text", "Noto Sans SC", system-ui, sans-serif'
+    fontSize: "15px"
+    fontWeight: 800
+    letterSpacing: "-0.01em"
   body:
-    fontFamily: '"SF Pro Text", "Segoe UI", system-ui, sans-serif'
-    fontSize: "1rem"
+    fontFamily: '"Inter", "SF Pro Text", "Noto Sans SC", system-ui, sans-serif'
+    fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.5
   label:
-    fontFamily: '"SF Pro Text", "Segoe UI", system-ui, sans-serif'
-    fontSize: "0.875rem"
+    fontFamily: '"Inter", "SF Pro Text", "Noto Sans SC", system-ui, sans-serif'
+    fontSize: "12px"
     fontWeight: 600
-    lineHeight: 1.4
   mono:
-    fontFamily: '"SFMono-Regular", Consolas, monospace'
-    fontSize: "0.75rem"
+    fontFamily: '"SFMono-Regular", "JetBrains Mono", Consolas, monospace'
+    fontSize: "11.5px"
     fontWeight: 400
-    lineHeight: 1.5
+    lineHeight: 1.7
 rounded:
-  xs: "4px"
-  sm: "12px"
-  md: "14px"
-  lg: "16px"
+  sm: "8px"
+  md: "10px"
+  lg: "14px"
+  xl: "16px"
   pill: "999px"
 spacing:
   xs: "4px"
   sm: "8px"
   md: "12px"
   lg: "16px"
-  xl: "20px"
-  xxl: "24px"
-  xxxl: "32px"
+  xl: "22px"
 components:
-  hero-panel:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.lg}"
-    padding: "28px"
-  form-panel:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.lg}"
-    padding: "{spacing.xxl}"
-  tunnel-card:
-    backgroundColor: "{colors.surface-muted}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.md}"
-    padding: "18px"
-  button-primary:
-    backgroundColor: "{colors.accent}"
-    textColor: "{colors.surface}"
-    rounded: "{rounded.pill}"
-    padding: "10px 16px"
-  button-secondary:
-    backgroundColor: "{colors.surface-strong}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.pill}"
-    padding: "10px 16px"
-  button-danger:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.danger}"
-    rounded: "{rounded.pill}"
-    padding: "10px 16px"
-  input-default:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.sm}"
-    padding: "12px 14px"
-  logs-panel:
-    backgroundColor: "{colors.log-bg}"
-    textColor: "{colors.log-ink}"
-    rounded: "{rounded.sm}"
-    padding: "{spacing.lg}"
+  bignum: 大号 tabular-nums 数字指标（运行数/吞吐/连接数），状态语义着色
+  tunnel-card: 白底卡片 + 状态图标(▲■◐✕) + 单行路径 + 状态 pill + 行内操作组
+  signal-rail: 水平信号轨拓扑；活跃链路紫色渐变 + 双向发光包流动
+  dialog: 居中浮层对话框（创建/编辑/删除确认），field-grid 两列表单
+  logs-panel: 深色日志面板，等宽字体，2s 自动刷新
+  lang-toggle: 顶栏 中/EN 胶囊切换
 ---
 
-# Design System: LTR Web Console
+# Design System: LTR Web Console · 极简信号
 
-## Overview
+## Creative North Star: "极简信号"
 
-**Creative North Star: "安静的本地控制面"**
+服务与终端并行的开发者，需要一眼判断隧道是否在工作、数据往哪流。这套界面像一块
+信号面板：黑白高对比的底，一个电光紫强调色，大号数字指标置顶；数据通路是一条
+信号轨，光点沿轨道流动就是流量本身——状态先于装饰，流动即信息。
 
-这个界面服务的是并行打开终端与浏览器的开发者，不是浏览品牌故事的访客。它应该像一块稳态控制面：信息先清楚，状态先可判，动作先可达，然后才谈气质。页面一打开，用户要立刻知道控制台监听在哪里、当前有多少 tunnel、哪些在运行，以及下一步最短动作是什么。
+反方向（沿用 PRODUCT.md 反参考）：不做营销站，不做玻璃拟态，不做花哨低代码面板；
+此外新增一条：**不用颜色堆砌科技感**——科技感来自大数字、等宽字体、克制的发光
+与信号隐喻，而非渐变彩虹。
 
-当前实现已经从早先偏暖纸、偏展示感的版本，收束成更克制的 product UI。整体语言转向系统无衬线、冷静浅中性底、窄色域强调与扁平化容器，用更少的视觉噪声换更强的长期使用稳定感。这套系统明确反对 `PRODUCT.md` 里提到的三类偏移：不要像营销站；不要太玻璃拟态；不要像花哨低代码面板。
+## Key Characteristics
 
-**Key Characteristics:**
-- 单一控制面语言，状态与动作权重清晰。
-- 左表单右列表的大桌面工作流，小屏退化为单列。
-- 颜色只承担语义与动作，不承担装饰性表演。
-- 日志层与管理层明确分轨。
-- 轮询刷新不应破坏用户焦点、滚动和上下文。
+- 黑白高对比（`#fafafa` / `#0c0c0e`）+ 单一电光紫 `#5b3df5`（深态 `#4328d4`）。
+- 语义色只三种：运行绿 `#0c7a43`、失败橘红 `#c23b12`、强调紫；各自带浅底。
+- 大号 tabular-nums 数字：页面打开先看到 运行数 / 实时吞吐 / 活跃连接。
+- 信号轨拓扑是核心组件：`本地服务 → ltr 客户端 → 中继 → 公网访客`，紫包入站、
+  绿包出站，链路空闲则灰线；流量驱动视觉，而非静态示意图。
+- 等宽字体承载一切"机器值"（地址、端口、字节、日志）。
+- 移动端（<640px）：卡片纵排、拓扑转纵向泳道（包下落）、新建按钮悬浮右下角。
+- `prefers-reduced-motion`：隐藏流动动画，用静态 →/← 箭头表达方向。
 
-## Colors
+## Color Usage Rules
 
-当前配色是 restrained product palette：中性灰白表面 + 一组蓝绿色动作色 + 明确语义状态色。
+- 紫色只用于：强调数字、活跃链路、入站方向包、客户端节点描边、聚焦态。
+- 绿色只用于：运行状态、出站方向包。
+- 橘红只用于：失败状态与错误文案、删除按钮文字。
+- 中性灰阶承担其余一切；不引入第四种彩色。
 
-### Primary
-- **控制蓝** (`#0f5f78`)：主按钮、关键链接、聚焦边框和运行中间态的主导色。它表达“执行、前进、连接”。
+## Layout
 
-### Secondary
-- **深控制蓝** (`#0b4c60`)：主动作 hover 态和链接 hover 态。只作为同一路径的加深态出现。
+- 单列 `max-width: 880px` 居中：顶栏 → （远程横幅）→ 大数字摘要 → 隧道卡片列表。
+- 创建/编辑/删除都是浮层对话框；列表永远是页面主体。
+- 卡片内层级：状态图标+名称+路径+操作 → 拓扑（仅运行/启动中）→ meta 行 → 日志。
 
-### Tertiary
-- **运行绿** (`#11643e`) / **运行浅底** (`#d9ece2`)：运行成功和稳定态。
-- **告警棕红** (`#9a3f20`) / **告警浅底** (`#f2e0d8`)：错误、失败、无效输入和危险提示。
-- **危险描边** (`#d8b4a8`, `#c99282`)：删除相关按钮边框与 hover 收紧色。
+## i18n
 
-### Neutral
-- **主背景灰白** (`#f4f4f1`)：页面基础画布。
-- **顶层冷洗色** (`#e8ecef` / `#e8ecef8c`)：首屏顶部轻微冷色洗层，用极低强度建立层次。
-- **纯白表面** (`#ffffff`)：hero、form、list panel 主表面。
-- **弱表面** (`#f7f8f8`)：tunnel card 和空态底。
-- **强表面** (`#f1f4f5`)：badge、secondary button、弱状态底。
-- **正文墨色** (`#172126`)：主要文本。
-- **辅助灰** (`#556169`, `#6a7881`)：说明、辅助文案、placeholder。
-- **边界灰** (`#ced6db`, `#aab6be`)：默认与 hover/强化描边。
-- **日志深底** (`#111417`) / **日志边界** (`#243039`) / **日志浅字** (`#edf2f5`)：原始进程输出层专用。
+- 全部文案经 `t(key)` 走字典（74 键 × 中/英），跟随浏览器语言，可手动切换并记忆。
+- 等宽"机器值"不翻译；句式以中文书写为基准，英文为回退源。
 
-### Named Rules
-**The Action-Only Accent Rule.** 蓝色只用于动作、链接、焦点与状态，不用于大块装饰。
+## Accessibility
 
-**The Console Layer Rule.** 管理层保持明亮、平静、低阴影；原始日志层单独使用深底与等宽字。
-
-## Typography
-
-**Display Font:** `"SF Pro Text", "Segoe UI", system-ui, sans-serif`
-**Body Font:** `"SF Pro Text", "Segoe UI", system-ui, sans-serif`
-**Label/Mono Font:** `"SFMono-Regular", Consolas, monospace`
-
-**Character:** 这是典型 product UI 字体策略：一个系统无衬线家族承担几乎所有界面阅读任务，只在日志层切到等宽字。目标不是“有性格的字体搭配”，而是“长期阅读下不出戏、不抢控制权”。
-
-### Hierarchy
-- **Display**（700, `clamp(2rem, 4vw, 3.25rem)`, 1, `-0.02em`）：只用于页面主标题。
-- **Headline**（700, `1.125rem`, 1.2）：区块标题和主要面板标题。
-- **Title**（700, `1rem`, 1.25）：tunnel card 名称。
-- **Body**（400, `1rem`, 1.5）：正文、状态说明、字段值、路径信息。
-- **Label**（600, `0.875rem`, 1.4）：表单标签、弱状态、辅助胶囊。
-- **Mono**（400, `0.75rem`, 1.5）：日志输出。
-
-### Named Rules
-**The Read-At-Glance Rule.** 所有信息先为扫读服务，再为风格服务；任何字重、字距、字号调整都不能伤害快速判读。
-
-## Elevation
-
-当前系统使用低抬升、低阴影、强描边的 product layering。大容器只用一档柔和阴影 `0 8px 24px rgba(17, 24, 29, 0.06)`；内部 card 不再继续漂浮，而是靠表面灰度与描边分层。日志层完全放弃阴影，改用深底形成独立工作层。
-
-### Shadow Vocabulary
-- **Panel Lift** (`box-shadow: 0 8px 24px rgba(17, 24, 29, 0.06)`): 只用于 `.hero`。
-- **Flat Containers** (`none`): `.panel` 与 `.tunnel-card` 默认不叠第二层装饰性阴影。
-- **Focus Ring** (`0 0 0 3px rgba(15, 95, 120, 0.18)`): 这是主要交互高亮，不是阴影替代品，而是可访问焦点层。
-
-### Named Rules
-**The Flat-By-Default Rule.** 平常态尽量平，只有顶层面板和焦点态才有明显抬升感。
-
-## Components
-
-### Buttons
-- **Shape:** 全部按钮使用胶囊圆角（`999px`），维持统一命令感。
-- **Primary:** 控制蓝底白字，hover 加深到 `#0b4c60`。
-- **Secondary:** 强表面底、深墨字、描边边界，用于刷新与中性动作。
-- **Ghost:** 透明底描边，hover 进入浅蓝底。
-- **Danger:** 透明底、危险描边与棕红字，不用大红实底，避免在日常控制台里过度吼叫。
-- **Busy State:** 通过 `button-busy::after` 注入小型旋转指示器，而不是替换整按钮文本。
-
-### Cards / Containers
-- **Corner Style:** panel `16px`，card `14px`，input/logs `12px`，focus 链接细节 `4px`。
-- **Background:** hero/panel 用纯白表面；card 用弱表面；logs 用深底。
-- **Border:** 整体依赖 `#ced6db` 与 `#aab6be` 两级边界控制层次。
-- **Layout:** 桌面使用左表单右列表双列；`920px` 以下退化为单列；`720px` 以下全面堆叠动作组。
-
-### Inputs / Fields
-- **Style:** 纯白输入框，`12px 14px` 内边距，`12px` 圆角，`44px` 最小高度。
-- **Placeholder:** 使用 `#6a7881`，保证比典型浅灰 placeholder 更可读。
-- **Focus:** 用控制蓝边框 + 柔和 focus ring。
-- **Error:** `input:invalid:user-invalid` 切换到告警边框与浅错误 ring。
-
-### Navigation
-- **Style:** 无全局导航，页面即控制面。
-- **Primary Landmarks:** hero 负责定位与总结；form panel 负责配置；list panel 负责运行态、元信息与日志。
-- **Feedback:** `#form-message` 与 `#list-feedback` 都是 live region，用于异步反馈。
-
-### Status Pills
-- **Style:** 胶囊 + 小圆点前缀。
-- **States:** `starting` 走控制蓝浅底；`running` 走绿色浅底；`failed` 走告警浅底。
-- **Purpose:** 它们是扫读列表时的第一信号，不可弱化成仅文本颜色差异。
-
-### Logs
-- **Style:** 深底、浅字、等宽字、最大高度 `240px`、内部滚动。
-- **Behavior:** 展开态由 `aria-expanded` 控制；内容更新应尽量保留滚动位置，不抢用户阅读上下文。
-
-## Do's and Don'ts
-
-### Do:
-- **Do** 保持控制台像产品工具，不像品牌展示页。
-- **Do** 让轮询更新保持 DOM 稳定，保住焦点、滚动和展开状态。
-- **Do** 让长 tunnel 名、长时间串、长地址都能断行，不把窄屏挤坏。
-- **Do** 使用统一 token 层，不要让实现先跑、文档滞后。
-- **Do** 让按钮和输入在触屏上下都满足 44px 级可点区域。
-
-### Don't:
-- **Don't** 像营销站：避免夸张 hero 结构、宣传式文案、过度品牌叙事和视觉噱头。
-- **Don't** 太玻璃拟态：避免依赖模糊、悬浮半透明层和装饰性光效来制造“高级感”。
-- **Don't** 像花哨低代码面板：避免过多彩色模块、过度圆角、冗余状态徽章、视觉密度失控和不必要的组件花样。
-- **Don't** 重新引入全量 `innerHTML` 轮询重绘。
-- **Don't** 把错误态做成只有颜色区别；必须同时保留文本和状态文案。
+- 文本对比度：ink/bg > 15:1，muted/bg > 4.6:1。
+- 状态不只靠颜色：图标字形（▲■◐✕）+ 文字标签双通道。
+- 拓扑 role="img" + aria-label 描述；日志 role="log"；错误 role="alert"。
+- 所有操作可键盘完成；对话框遮罩点击关闭；reduced-motion 全局降级。

@@ -1,118 +1,14 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>LTR Web Console</title>
+    <meta name="color-scheme" content="light" />
+    <title>LTR</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <main class="shell">
-      <section id="auth-panel" class="panel auth-panel" hidden aria-labelledby="auth-title">
-        <div class="section-head section-head-compact">
-          <div>
-            <h2 id="auth-title">Unlock Web Console</h2>
-            <p class="section-copy">Enter the bearer token printed by LTR when remote Web mode started.</p>
-          </div>
-        </div>
-        <form id="auth-form" class="auth-form">
-          <label>
-            <span>Web Token</span>
-            <input id="auth-token" name="token" type="password" autocomplete="off" required />
-          </label>
-          <div class="form-actions">
-            <button id="auth-submit" type="submit">Unlock</button>
-            <p id="auth-message" class="message" role="alert" aria-live="assertive"></p>
-          </div>
-        </form>
-      </section>
-      <section class="hero" aria-labelledby="page-title">
-        <div class="hero-topline">
-          <p class="hero-kicker">Local TCP tunnel control</p>
-          <p class="hero-badge" id="tunnel-summary">No tunnels configured</p>
-        </div>
-        <h1 id="page-title">LTR Web Console</h1>
-        <p class="subtitle">Create, start, stop, and inspect <code>ltr local</code> tunnels without leaving the browser.</p>
-        <p class="addr" id="console-addr"></p>
-        <div id="session-banner" class="session-banner" hidden>
-          <p id="session-mode" class="session-banner-title"></p>
-          <p id="session-remote-web" class="session-banner-copy"></p>
-          <p id="session-remote-ssh" class="session-banner-copy"></p>
-          <ul id="session-warnings" class="session-warning-list"></ul>
-        </div>
-      </section>
-
-      <section class="panel form-panel" aria-labelledby="form-title">
-        <div class="section-head section-head-compact">
-          <div>
-            <h2 id="form-title">Create local tunnel</h2>
-            <p class="section-copy">Use the same tunnel terms as the CLI. Leave Remote Port empty to request one automatically.</p>
-          </div>
-        </div>
-        <form id="tunnel-form" novalidate>
-          <div class="form-grid">
-            <label>
-              <span>Name</span>
-              <input name="name" type="text" autocomplete="off" placeholder="staging-api" required />
-            </label>
-            <label>
-              <span>Local Port</span>
-              <input name="local_port" type="number" min="1" max="65535" inputmode="numeric" placeholder="3000" required />
-            </label>
-            <label>
-              <span>To</span>
-              <input name="to" type="text" value="localhost" spellcheck="false" required />
-            </label>
-            <label>
-              <span>Remote Port</span>
-              <input name="port" type="number" min="1" max="65535" inputmode="numeric" placeholder="auto" />
-            </label>
-            <label>
-              <span>Local Host</span>
-              <input name="local_host" type="text" value="127.0.0.1" spellcheck="false" required />
-            </label>
-            <label>
-              <span>Secret</span>
-              <input name="secret" type="password" autocomplete="off" placeholder="Optional" />
-            </label>
-          </div>
-          <div class="form-actions">
-            <div class="form-actions-inline">
-              <button id="submit-btn" type="submit">Create tunnel</button>
-              <button id="cancel-edit-btn" type="button" class="ghost" hidden>Cancel edit</button>
-            </div>
-            <p id="form-message" class="message" role="status" aria-live="polite"></p>
-          </div>
-        </form>
-      </section>
-
-      <section class="panel list-panel" aria-labelledby="list-title">
-        <div class="section-head">
-          <div>
-            <h2 id="list-title">Tunnels</h2>
-            <p class="section-copy">Running tunnels refresh automatically every 2 seconds. Expand logs only when you need raw process output.</p>
-          </div>
-          <button id="refresh-btn" type="button" class="secondary">Refresh</button>
-        </div>
-        <div id="list-feedback" class="list-feedback" role="status" aria-live="polite"></div>
-        <div id="tunnel-list" class="tunnel-list"></div>
-      </section>
-    </main>
-    <dialog id="delete-dialog" class="confirm-dialog" aria-labelledby="delete-dialog-title">
-      <form method="dialog" class="confirm-dialog-card">
-        <div class="confirm-dialog-copy">
-          <p class="confirm-dialog-kicker">Delete tunnel</p>
-          <h2 id="delete-dialog-title">Delete this tunnel?</h2>
-          <p id="delete-dialog-body" class="section-copy">
-            This permanently removes the saved tunnel configuration.
-          </p>
-        </div>
-        <div class="confirm-dialog-actions">
-          <button type="submit" value="cancel" class="secondary">Keep tunnel</button>
-          <button type="submit" value="confirm" class="danger">Delete tunnel</button>
-        </div>
-      </form>
-    </dialog>
-    <script src="/app.js"></script>
+    <div id="app"></div>
+    <script type="module" src="/js/app.mjs"></script>
   </body>
 </html>
