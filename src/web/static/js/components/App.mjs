@@ -10,7 +10,6 @@ import { api, ApiError, setToken } from '../api.mjs';
 import { formatRate } from '../lib.mjs';
 import { AuthPanel } from './AuthPanel.mjs';
 import { TunnelCard } from './TunnelCard.mjs';
-import { NetworkMap } from './NetworkMap.mjs';
 import { TunnelDialog } from './TunnelDialog.mjs';
 import { ConfirmDialog } from './ConfirmDialog.mjs';
 
@@ -27,9 +26,6 @@ export default function App() {
   const [logsCache, setLogsCache] = useState({});
   const [loadError, setLoadError] = useState('');
   const [rates, setRates] = useState({});
-  const [mapOpen, setMapOpen] = useState(
-    () => localStorage.getItem('ltr-map-open') !== '0'
-  );
   const ratesRef = useRef({});
 
   useEffect(() => onLangChange(setCurrentLang), []);
@@ -194,18 +190,6 @@ export default function App() {
 
       ${loadError ? html`<div class="load-error" role="alert">${t('app.loadFailed')}：${loadError}</div>` : ''}
 
-      <${NetworkMap}
-        tunnels=${tunnels}
-        rates=${rates}
-        open=${mapOpen}
-        onToggle=${() => {
-          setMapOpen((prev) => {
-            localStorage.setItem('ltr-map-open', prev ? '0' : '1');
-            return !prev;
-          });
-        }}
-      />
-
       <div class="tunnel-list">
         ${tunnels.length === 0
           ? html`<div class="empty">${t('app.empty')}</div>`
@@ -214,6 +198,8 @@ export default function App() {
                 <${TunnelCard}
                   key=${item.id}
                   tunnel=${item}
+                  rateIn=${(ratesNow[item.id] || {}).in || 0}
+                  rateOut=${(ratesNow[item.id] || {}).out || 0}
                   logsOpen=${!!logsOpen[item.id]}
                   logs=${logsCache[item.id]}
                   logsBusy=${logsOpen[item.id] && !logsCache[item.id]}

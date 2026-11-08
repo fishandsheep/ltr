@@ -1,6 +1,7 @@
 import { html } from '../lib.mjs';
 import { t } from '../i18n.mjs';
 import { formatBytes } from '../lib.mjs';
+import { Topology } from './Topology.mjs';
 
 const SIG = {
   running: '▲',
@@ -11,6 +12,8 @@ const SIG = {
 
 export function TunnelCard({
   tunnel,
+  rateIn,
+  rateOut,
   logsOpen,
   logs,
   logsBusy,
@@ -21,6 +24,7 @@ export function TunnelCard({
   onToggleLogs,
 }) {
   const status = tunnel.status;
+  const showTopo = status === 'running' || status === 'starting';
   const stats = tunnel.stats || { active_connections: 0, bytes_in: 0, bytes_out: 0 };
 
   return html`
@@ -61,6 +65,10 @@ export function TunnelCard({
         : ''}
       ${status === 'stopped'
         ? html`<div class="hint">${t('card.stoppedHint')}</div>`
+        : ''}
+
+      ${showTopo
+        ? html`<${Topology} tunnel=${tunnel} rateIn=${rateIn} rateOut=${rateOut} />`
         : ''}
 
       <div class="meta">
