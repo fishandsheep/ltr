@@ -69,8 +69,8 @@ const JS_ASSETS: &[JsAsset] = &[
         include_str!("static/js/components/ConfirmDialog.mjs"),
     ),
     asset(
-        "components/Topology.mjs",
-        include_str!("static/js/components/Topology.mjs"),
+        "components/NetworkMap.mjs",
+        include_str!("static/js/components/NetworkMap.mjs"),
     ),
     asset(
         "components/TunnelCard.mjs",
