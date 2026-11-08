@@ -15,11 +15,22 @@ export function Topology({ tunnel, rateIn, rateOut }) {
     : t('topo.assigning');
   const localAddress = `${tunnel.config.local_host}:${tunnel.config.local_port}`;
 
-  // Endpoint boxes open the service in a new tab; the client node and the
-  // "assigning" placeholder stay inert.
-  const link = (address, label) => html`<a class="topo-box topo-link"
-    href=${`http://${address}`} target="_blank" rel="noopener noreferrer"
-    title=${t('topo.openTab')}>${label || address}</a>`;
+  // The console fingerprints the forwarded service on start. Only browser-
+  // openable protocols get a link (with the right scheme); ssh/tcp and
+  // undetected services render as inert text so clicks never dead-end.
+  const proto = tunnel.service_proto || null;
+  const scheme = proto === 'https' ? 'https' : 'http';
+  const linkable = proto === 'http' || proto === 'https';
+  const protoBadge = proto ? html`<span class="topo-proto">${proto.toUpperCase()}</span>` : null;
+
+  // Endpoint boxes open the service in a new tab when the protocol is
+  // http/https; everything else stays inert.
+  const endpoint = (address, label) =>
+    linkable
+      ? html`<a class="topo-box topo-link" href=${`${scheme}://${address}`}
+          target="_blank" rel="noopener noreferrer"
+          title=${t('topo.openTab')}>${label || address}${protoBadge}</a>`
+      : html`<span class="topo-box">${label || address}${protoBadge}</span>`;
 
   return html`
     <div class="topo" data-live=${live ? 'on' : 'off'} role="img"
@@ -28,7 +39,7 @@ export function Topology({ tunnel, rateIn, rateOut }) {
 
       <div class="topo-rail">
         <div class="topo-node">
-          ${link(localAddress)}
+          ${endpoint(localAddress)}
           <span class="topo-cap">${t('topo.local')}</span>
         </div>
         <div class="topo-seg">
@@ -51,7 +62,7 @@ export function Topology({ tunnel, rateIn, rateOut }) {
         </div>
         <div class="topo-node">
           ${tunnel.remote_port
-            ? link(remoteEndpoint)
+            ? endpoint(remoteEndpoint)
             : html`<span class="topo-box">${remoteEndpoint}</span>`}
           <span class="topo-cap">${t('topo.relay')}</span>
         </div>

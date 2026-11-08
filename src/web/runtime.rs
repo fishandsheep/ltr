@@ -9,7 +9,7 @@ use tokio::{sync::oneshot, task::JoinHandle};
 use crate::client::{LocalArgs, TunnelEvent, TunnelStatsSnapshot, DEFAULT_MAX_ACTIVE_CONNECTIONS};
 
 use super::session::{
-    now_rfc3339, SystemTunnelRole, TunnelConfig, TunnelInfo, TunnelKind, TunnelStatus,
+    now_rfc3339, ServiceProto, SystemTunnelRole, TunnelConfig, TunnelInfo, TunnelKind, TunnelStatus,
 };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TunnelRole {
@@ -45,6 +45,7 @@ pub(crate) struct TunnelRuntime {
     pub(crate) logs: VecDeque<String>,
     pub(crate) max_log_lines: usize,
     pub(crate) stats: TunnelStatsSnapshot,
+    pub(crate) service_proto: Option<ServiceProto>,
 }
 
 impl TunnelRuntime {
@@ -61,6 +62,7 @@ impl TunnelRuntime {
             display_url: self.display_url.clone(),
             created_at: self.created_at.clone(),
             updated_at: self.updated_at.clone(),
+            service_proto: self.service_proto,
             stats: self.stats,
         }
     }

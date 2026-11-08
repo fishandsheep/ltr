@@ -172,6 +172,13 @@ a { color: var(--acc); }
   font-family: var(--mono); font-size: 11px; font-weight: 700; background: var(--panel);
   border: 1.5px solid var(--ink); border-radius: 8px; padding: 5px 10px; white-space: nowrap;
 }
+.topo-proto {
+  display: inline-block; margin-left: 7px; padding: 1px 5px;
+  font-size: 9px; font-weight: 700; letter-spacing: .06em;
+  border: 1px solid var(--line-strong); border-radius: 4px;
+  color: var(--muted); vertical-align: 1px;
+}
+.topo-link .topo-proto { border-color: var(--line-strong); color: var(--acc-deep); }
 .topo-link { text-decoration: none; transition: color .12s, border-color .12s; }
 .topo-link:hover { color: var(--acc); border-color: var(--acc); text-decoration: underline; }
 .topo-box-client { border-color: var(--acc); color: var(--acc-deep); }

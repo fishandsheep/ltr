@@ -198,7 +198,33 @@ pub struct TunnelInfo {
     pub display_url: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_proto: Option<ServiceProto>,
     pub stats: TunnelStatsSnapshot,
+}
+
+/// Protocol a tunneled local service was fingerprinted as speaking.
+///
+/// Detected best-effort by the console after a tunnel starts; used by the
+/// web UI to display the protocol and only link what a browser can open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceProto {
+    Http,
+    Https,
+    Ssh,
+    Tcp,
+}
+
+impl std::fmt::Display for ServiceProto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ServiceProto::Http => "http",
+            ServiceProto::Https => "https",
+            ServiceProto::Ssh => "ssh",
+            ServiceProto::Tcp => "tcp",
+        })
+    }
 }
 
 /// Static spec for system tunnels.

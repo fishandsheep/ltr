@@ -19,6 +19,7 @@ use tokio::{net::TcpListener, sync::oneshot};
 pub mod api;
 /// Persistent Web credentials.
 pub mod credentials;
+mod probe;
 mod registry;
 mod runtime;
 mod session;

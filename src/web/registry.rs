@@ -176,6 +176,7 @@ pub(crate) fn runtime_from_persisted(
         logs: std::collections::VecDeque::new(),
         max_log_lines,
         stats: Default::default(),
+        service_proto: None,
     }
 }
 

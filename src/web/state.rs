@@ -11,7 +11,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::client::{run_local, LocalArgs};
+use crate::client::{run_local, LocalArgs, TunnelEvent};
 
 use super::registry::{self, TunnelRegistry};
 use super::runtime::{TunnelRole, TunnelRuntime};
@@ -301,12 +301,16 @@ impl WebState {
         let state_for_events = self.clone();
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
-                let remote_update = {
+                let (remote_update, started) = {
                     let mut runtime = entry_for_events.lock().await;
-                    runtime.apply_event(event)
+                    let started = matches!(event, TunnelEvent::Started { .. });
+                    (runtime.apply_event(event), started)
                 };
                 if let Some((role, to, remote_port)) = remote_update {
                     update_session_remote(&state_for_events, role, &to, remote_port).await;
+                }
+                if started {
+                    super::probe::spawn_service_probe(Arc::clone(&entry_for_events));
                 }
             }
         });
@@ -316,6 +320,7 @@ impl WebState {
             runtime.status = TunnelStatus::Starting;
             runtime.remote_port = None;
             runtime.error = None;
+            runtime.service_proto = None;
             runtime.touch();
             let tunnel_name = runtime.config.name.clone();
             runtime.push_log(format!("starting tunnel {tunnel_name}"));
@@ -532,6 +537,7 @@ impl WebState {
             logs: std::collections::VecDeque::new(),
             max_log_lines: self.limits.max_log_lines,
             stats: Default::default(),
+            service_proto: None,
         };
         tunnels.insert(id.clone(), &config, runtime);
         drop(tunnels);
