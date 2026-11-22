@@ -9,13 +9,16 @@ use std::{
 
 use anyhow::Result;
 use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, Subcommand};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    client::{run_local, LocalArgs},
+    client::{run_local, LocalArgs, TunnelEvent},
+    daemon,
     server::Server,
+    shared::CONTROL_PORT,
     transport,
     web::{
-        self, credentials, SessionInfo, SessionMode, SystemTunnelRole, SystemTunnelSpec,
+        self, credentials, OnReady, SessionInfo, SessionMode, SystemTunnelRole, SystemTunnelSpec,
         TunnelConfig, WebLimits, WebState,
     },
 };
@@ -66,12 +69,18 @@ pub struct WebConsoleArgs {
     version,
     about,
     disable_version_flag = true,
-    after_help = "Examples:\n  ltr\n  ltr local 8000 --to your-server.example\n  ltr bundle --to your-server.example --secret xxx\n  ltr bundle --to your-server.example --no-ssh\n  npx @qinshower/ltr"
+    disable_help_subcommand = true,
+    after_help = "Examples:\n  ltr\n  ltr local 8000 --to your-server.example\n  ltr bundle --to your-server.example --secret xxx\n  ltr bundle --to your-server.example --no-ssh"
 )]
 pub struct Args {
     /// Prints version information.
     #[arg(short = 'v', long = "version", action = ArgAction::Version)]
     pub version: Option<bool>,
+
+    /// Keep running in the foreground; by default LTR moves to the background
+    /// after printing its startup summary.
+    #[arg(short = 'f', long = "front", env = "LTR_FRONT", action = ArgAction::SetTrue)]
+    pub front: bool,
 
     #[command(flatten)]
     pub web: WebConsoleArgs,
@@ -95,15 +104,20 @@ pub fn parse_args() -> Args {
 
 /// Initialize logging from parsed CLI and environment settings.
 pub fn init_logging(args: &Args) {
+    init_logging_into(args, None);
+}
+
+/// Initialize logging, optionally appending to a log file instead of writing
+/// to the terminal (background mode).
+pub fn init_logging_into(args: &Args, file: Option<daemon::LogFileWriter>) {
     let filter = tracing_subscriber::EnvFilter::try_new(&args.log_level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    if args.log_json {
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .json()
-            .init();
-    } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    match (args.log_json, file) {
+        (true, Some(writer)) => builder.json().with_writer(writer).init(),
+        (true, None) => builder.json().init(),
+        (false, Some(writer)) => builder.with_writer(writer).init(),
+        (false, None) => builder.init(),
     }
 }
 
@@ -274,6 +288,16 @@ pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
     }
 }
 
+/// Creates the ready hook that prints the background summary once a mode
+/// finishes startup, carrying optional extra summary lines.
+fn daemon_ready_hook(extra_lines: Vec<String>) -> Option<OnReady> {
+    let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
+    daemon::spawn_finish(ready_rx);
+    Some(Box::new(move || {
+        let _ = ready_tx.send(extra_lines);
+    }))
+}
+
 /// Runs parsed CLI command.
 pub async fn run(args: Args) -> Result<()> {
     if let Err(err) = validate_args(&args) {
@@ -290,21 +314,41 @@ pub async fn run(args: Args) -> Result<()> {
                     args.web.web_max_connections,
                     args.web.web_max_log_lines,
                 ),
+                daemon_ready_hook(Vec::new()),
             )
             .await;
         }
         Some(Command::Local(local_args)) => {
+            let to = local_args.to.clone();
+            let local_host = local_args.local_host.clone();
+            let local_port = local_args.local_port;
+            let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
+            daemon::spawn_finish(ready_rx);
+            let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                while let Some(event) = events_rx.recv().await {
+                    if let TunnelEvent::Started {
+                        remote_port: Some(remote_port),
+                    } = event
+                    {
+                        let _ = ready_tx.send(vec![format!(
+                            "LTR local tunnel: {local_host}:{local_port} -> {to}:{remote_port}"
+                        )]);
+                        break;
+                    }
+                }
+            });
             run_local(
                 local_args,
                 async {
                     let _ = tokio::signal::ctrl_c().await;
                 },
-                None,
+                Some(events_tx),
             )
             .await?;
         }
         Some(Command::Bundle(bundle_args)) => {
-            run_bundle(bundle_args).await?;
+            run_bundle(bundle_args, daemon_ready_hook(Vec::new())).await?;
         }
         Some(Command::Server(server_args)) => {
             let port_range = server_args.min_port..=server_args.max_port;
@@ -313,9 +357,17 @@ pub async fn run(args: Args) -> Result<()> {
                     .error(ErrorKind::InvalidValue, "port range is empty")
                     .exit();
             }
+            let bind_addr = server_args.bind_addr;
             let mut server = Server::new(port_range, server_args.secret.as_deref());
             server.set_bind_addr(server_args.bind_addr);
             server.set_bind_tunnels(server_args.bind_tunnels.unwrap_or(server_args.bind_addr));
+            let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
+            daemon::spawn_finish(ready_rx);
+            server.set_on_ready(Box::new(move || {
+                let _ = ready_tx.send(vec![format!(
+                    "LTR server listening on {bind_addr}:{CONTROL_PORT}"
+                )]);
+            }));
             if !server_args.no_tls {
                 let tls = match (&server_args.tls_cert, &server_args.tls_key) {
                     (Some(cert), Some(key)) => {
@@ -380,6 +432,7 @@ pub async fn run_web_local(
     web_addr: SocketAddr,
     web_token: Option<String>,
     limits: WebLimits,
+    on_ready: Option<OnReady>,
 ) -> Result<()> {
     if !web_addr.ip().is_loopback() && web_token.is_none() {
         eprintln!(
@@ -393,18 +446,19 @@ pub async fn run_web_local(
         limits,
         Some(web::default_tunnels_path()),
     );
-    web::serve_with_state(
+    web::serve_with_state_on_ready(
         web::ServeConfig {
             addr: web_addr,
             session: state.session().await,
         },
         state,
         tokio::signal::ctrl_c(),
+        on_ready,
     )
     .await
 }
 
-pub async fn run_bundle(args: BundleArgs) -> Result<()> {
+pub async fn run_bundle(args: BundleArgs, on_ready: Option<OnReady>) -> Result<()> {
     let include_ssh = !args.no_ssh;
     let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
     let session = SessionInfo {
@@ -467,7 +521,7 @@ pub async fn run_bundle(args: BundleArgs) -> Result<()> {
             display_url: Some(format!("{}:{}", args.to, args.ssh_port)),
         });
     }
-    web::run_managed(
+    web::run_managed_on_ready(
         web::ServeConfig {
             addr: args.web.web_addr,
             session: state.session().await,
@@ -477,6 +531,7 @@ pub async fn run_bundle(args: BundleArgs) -> Result<()> {
         async {
             let _ = tokio::signal::ctrl_c().await;
         },
+        on_ready,
     )
     .await
 }
@@ -636,10 +691,30 @@ mod tests {
     }
 
     #[test]
+    fn help_subcommand_is_removed() {
+        let err = Args::try_parse_from(["ltr", "help"]).expect_err("help subcommand is removed");
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
+    }
+
+    #[test]
+    fn parse_front_flag() {
+        let args = Args::try_parse_from(["ltr", "--front"]).expect("parse should succeed");
+        assert!(args.front);
+        assert!(args.command.is_none());
+
+        let args = Args::try_parse_from(["ltr", "-f", "server"]).expect("parse should succeed");
+        assert!(args.front);
+        assert!(args.command.is_some());
+
+        let args = Args::try_parse_from(["ltr"]).expect("parse should succeed");
+        assert!(!args.front);
+    }
+
+    #[test]
     fn help_mentions_zero_arg_and_bundle_usage() {
         let help = Args::command().render_long_help().to_string();
         assert!(help.contains("ltr bundle --to your-server.example --secret xxx"));
         assert!(help.contains("ltr bundle --to your-server.example --no-ssh"));
-        assert!(help.contains("npx @qinshower/ltr"));
+        assert!(!help.contains("npx @qinshower/ltr"));
     }
 }

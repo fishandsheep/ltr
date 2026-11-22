@@ -12,6 +12,7 @@ use axum::{
     Json, Router,
 };
 use axum_server::{tls_rustls::RustlsConfig, Handle};
+pub use ltr_relay::OnReady;
 use serde_json::json;
 use tokio::{net::TcpListener, sync::oneshot};
 
@@ -143,7 +144,24 @@ pub async fn serve_with_state<S>(config: ServeConfig, state: WebState, shutdown:
 where
     S: Future<Output = std::result::Result<(), std::io::Error>> + Send + 'static,
 {
+    serve_with_state_on_ready(config, state, shutdown, None).await
+}
+
+/// Like [`serve_with_state`], with a callback fired once the console listener
+/// is bound.
+pub async fn serve_with_state_on_ready<S>(
+    config: ServeConfig,
+    state: WebState,
+    shutdown: S,
+    on_ready: Option<OnReady>,
+) -> Result<()>
+where
+    S: Future<Output = std::result::Result<(), std::io::Error>> + Send + 'static,
+{
     let bound = bind_web_listener(config.addr, state.web_tls()).await?;
+    if let Some(on_ready) = on_ready {
+        on_ready();
+    }
     serve_bound(bound, state, async move {
         let _ = shutdown.await;
     })
@@ -246,6 +264,21 @@ pub async fn run_managed<S>(
 where
     S: Future<Output = ()> + Send + 'static,
 {
+    run_managed_on_ready(config, state, system_tunnels, shutdown, None).await
+}
+
+/// Like [`run_managed`], with a callback fired once the console listener is
+/// bound and all system tunnels are running.
+pub async fn run_managed_on_ready<S>(
+    config: ServeConfig,
+    state: WebState,
+    system_tunnels: Vec<SystemTunnelSpec>,
+    shutdown: S,
+    on_ready: Option<OnReady>,
+) -> Result<()>
+where
+    S: Future<Output = ()> + Send + 'static,
+{
     let bound = bind_web_listener(config.addr, state.web_tls()).await?;
     let web_port = bound.addr().port();
     let mut system_ids = Vec::with_capacity(system_tunnels.len());
@@ -286,6 +319,10 @@ where
     let monitor_ids = system_ids.clone();
     let mut monitor_task =
         tokio::spawn(async move { monitor_state.monitor_locked_tunnels(&monitor_ids).await });
+
+    if let Some(on_ready) = on_ready {
+        on_ready();
+    }
 
     tokio::pin!(shutdown);
 

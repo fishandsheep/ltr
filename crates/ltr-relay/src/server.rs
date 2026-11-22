@@ -1,7 +1,7 @@
 //! Server implementation for the LTR service.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::{io, ops::RangeInclusive, sync::Arc, time::Duration};
+use std::{io, ops::RangeInclusive, sync::Arc, sync::Mutex, time::Duration};
 
 use anyhow::Result;
 use dashmap::DashMap;
@@ -12,6 +12,7 @@ use tracing::{info, info_span, warn, Instrument};
 use uuid::Uuid;
 
 use crate::auth::Authenticator;
+use crate::OnReady;
 use crate::shared::{configure_tcp_stream, ClientMessage, Delimited, ServerMessage, CONTROL_PORT};
 use crate::transport::{self, BoxedStream, ServerTlsConfig};
 
@@ -34,6 +35,9 @@ pub struct Server {
 
     /// Optional TLS adapter for the shared control port.
     tls: Option<ServerTlsConfig>,
+
+    /// Optional callback fired once the control listener is bound.
+    on_ready: Option<Mutex<OnReady>>,
 }
 
 impl Server {
@@ -47,6 +51,7 @@ impl Server {
             bind_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             bind_tunnels: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             tls: None,
+            on_ready: None,
         }
     }
 
@@ -65,13 +70,27 @@ impl Server {
         self.tls = Some(tls);
     }
 
+    /// Set a callback fired once the control listener is bound and the
+    /// server enters its accept loop.
+    pub fn set_on_ready(&mut self, on_ready: OnReady) {
+        self.on_ready = Some(Mutex::new(on_ready));
+    }
+
     /// Start the server, listening for new connections.
-    pub async fn listen(self) -> Result<()> {
+    pub async fn listen(mut self) -> Result<()> {
+        let on_ready = self
+            .on_ready
+            .take()
+            .map(Mutex::into_inner)
+            .map(|on_ready| on_ready.expect("on-ready lock should not be poisoned"));
         let this = Arc::new(self);
         let listener = TcpListener::bind((this.bind_addr, CONTROL_PORT)).await?;
         info!(addr = ?this.bind_addr, "server listening");
         if this.auth.is_none() {
             warn!("server authentication is disabled; use --secret for a restricted relay");
+        }
+        if let Some(on_ready) = on_ready {
+            on_ready();
         }
 
         loop {

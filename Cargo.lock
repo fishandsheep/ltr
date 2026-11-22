@@ -843,6 +843,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hmac",
+ "libc",
  "ltr-protocol",
  "ltr-relay",
  "rcgen",

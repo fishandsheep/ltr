@@ -121,7 +121,7 @@ pub(crate) fn load_or_generate_tls(
     }
 }
 
-fn data_dir() -> Result<PathBuf> {
+pub(crate) fn data_dir() -> Result<PathBuf> {
     #[cfg(target_os = "windows")]
     let base = env::var_os("LOCALAPPDATA").or_else(|| env::var_os("APPDATA"));
 

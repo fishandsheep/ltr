@@ -6,20 +6,21 @@
 //! information about the binary, see the command below.
 //!
 //! ```shell
-//! $ ltr help
+//! $ ltr --help
 //! ```
 //!
 //! There are two components to the crate, offering implementations of the
 //! server network daemon and client local forwarding proxy. Both are public
 //! members and can be run programmatically with a Tokio 1.0 runtime.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 /// CLI argument parsing and command dispatch.
 pub mod cli;
+pub mod daemon;
 pub mod shared;
 /// Local web console for managing client tunnels.
 pub mod web;
 
-pub use ltr_relay::{auth, client, server, transport};
+pub use ltr_relay::{auth, client, server, transport, OnReady};
