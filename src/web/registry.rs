@@ -68,7 +68,7 @@ pub fn default_tunnels_path() -> PathBuf {
     config_dir().join("tunnels.toml")
 }
 
-fn config_dir() -> PathBuf {
+pub(crate) fn config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("APPDATA"));
 

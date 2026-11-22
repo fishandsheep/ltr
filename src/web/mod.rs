@@ -21,7 +21,7 @@ pub mod api;
 /// Persistent Web credentials.
 pub mod credentials;
 mod probe;
-mod registry;
+pub(crate) mod registry;
 mod runtime;
 mod session;
 /// In-memory state and tunnel metadata.

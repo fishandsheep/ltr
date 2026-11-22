@@ -13,6 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     client::{run_local, LocalArgs, TunnelEvent, DEFAULT_MAX_ACTIVE_CONNECTIONS},
+    conf::{self, FileConfig},
     daemon,
     server::Server,
     shared::CONTROL_PORT,
@@ -32,50 +33,31 @@ const DEFAULT_WEB_PORT: u16 = 7836;
 /// Default remote port for the exposed SSH tunnel (`ltr ssh`).
 const SSH_DEFAULT_REMOTE_PORT: u16 = 2222;
 
-const AFTER_HELP: &str = "Examples:\n  ltr 8000 -t your-server.example\n  ltr 8000\n  ltr 192.168.1.5:8000 -t your-server.example -p 9000\n  ltr web\n  ltr ssh\n  ltr server\n  ltr -l\n  ltr -s 9000";
+const AFTER_HELP: &str = "Examples:\n  ltr 8000 -t your-server.example\n  ltr 8000\n  ltr 192.168.1.5:8000 -t your-server.example -p 9000\n  ltr web\n  ltr ssh\n  ltr server\n  ltr -l\n  ltr -s 9000\n  ltr conf set to your-server.example";
 
-/// Shared local web console arguments, flattened into every mode that hosts the console.
-#[derive(clap::Args, Debug, Clone)]
+/// Shared local web console arguments (all hidden power flags; the defaults
+/// live in the conf registry).
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct WebConsoleArgs {
     /// Address for the local web console.
-    #[arg(long = "web-addr", default_value = "127.0.0.1:7836", hide = true)]
-    pub web_addr: SocketAddr,
+    #[arg(long = "web-addr", hide = true)]
+    pub web_addr: Option<SocketAddr>,
 
     /// Bearer token for Web API requests.
-    #[arg(
-        long = "web-token",
-        env = "LTR_WEB_TOKEN",
-        hide_env_values = true,
-        hide = true
-    )]
+    #[arg(long = "web-token", hide = true)]
     pub web_token: Option<String>,
 
     /// Maximum number of tunnel definitions in the Web control plane.
-    #[arg(
-        long = "web-max-tunnels",
-        env = "LTR_WEB_MAX_TUNNELS",
-        default_value_t = 64,
-        hide = true
-    )]
-    pub web_max_tunnels: usize,
+    #[arg(long = "web-max-tunnels", hide = true)]
+    pub web_max_tunnels: Option<usize>,
 
     /// Maximum active data connections per Web-managed tunnel.
-    #[arg(
-        long = "web-max-connections",
-        env = "LTR_WEB_MAX_CONNECTIONS",
-        default_value_t = 256,
-        hide = true
-    )]
-    pub web_max_connections: usize,
+    #[arg(long = "web-max-connections", hide = true)]
+    pub web_max_connections: Option<usize>,
 
     /// Maximum retained log lines per Web-managed tunnel.
-    #[arg(
-        long = "web-max-log-lines",
-        env = "LTR_WEB_MAX_LOG_LINES",
-        default_value_t = 500,
-        hide = true
-    )]
-    pub web_max_log_lines: usize,
+    #[arg(long = "web-max-log-lines", hide = true)]
+    pub web_max_log_lines: Option<usize>,
 }
 
 /// Shared relay destination arguments, flattened at the top level and into the
@@ -83,7 +65,7 @@ pub struct WebConsoleArgs {
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct TunnelArgs {
     /// Address of the remote relay server.
-    #[arg(short = 't', long = "to", env = "LTR_SERVER", value_name = "HOST")]
+    #[arg(short = 't', long = "to", value_name = "HOST")]
     pub to: Option<String>,
 
     /// Remote port to request on the relay; 0 asks for a free port.
@@ -91,12 +73,7 @@ pub struct TunnelArgs {
     pub dport: Option<u16>,
 
     /// Optional secret for authentication.
-    #[arg(
-        long = "secret",
-        env = "LTR_SECRET",
-        hide_env_values = true,
-        hide = true
-    )]
+    #[arg(long = "secret", hide = true)]
     pub secret: Option<String>,
 
     /// Disable TLS and connect over plaintext (for relays without TLS).
@@ -104,33 +81,23 @@ pub struct TunnelArgs {
     pub no_tls: bool,
 
     /// CA PEM used to validate the remote TLS certificate.
-    #[arg(long = "tls-ca", env = "LTR_TLS_CA", value_name = "PATH", hide = true)]
+    #[arg(long = "tls-ca", value_name = "PATH", hide = true)]
     pub tls_ca: Option<PathBuf>,
 
     /// SHA-256 fingerprint of the remote TLS certificate.
-    #[arg(long = "tls-fingerprint", env = "LTR_TLS_FINGERPRINT", hide = true)]
+    #[arg(long = "tls-fingerprint", hide = true)]
     pub tls_fingerprint: Option<String>,
 
     /// TLS server name; defaults to the --to value.
-    #[arg(long = "tls-server-name", env = "LTR_TLS_SERVER_NAME", hide = true)]
+    #[arg(long = "tls-server-name", hide = true)]
     pub tls_server_name: Option<String>,
 
     /// Client certificate PEM for mutual tunnel TLS.
-    #[arg(
-        long = "tls-client-cert",
-        env = "LTR_TLS_CLIENT_CERT",
-        value_name = "PATH",
-        hide = true
-    )]
+    #[arg(long = "tls-client-cert", value_name = "PATH", hide = true)]
     pub tls_client_cert: Option<PathBuf>,
 
     /// Client private key PEM for mutual tunnel TLS.
-    #[arg(
-        long = "tls-client-key",
-        env = "LTR_TLS_CLIENT_KEY",
-        value_name = "PATH",
-        hide = true
-    )]
+    #[arg(long = "tls-client-key", value_name = "PATH", hide = true)]
     pub tls_client_key: Option<PathBuf>,
 
     /// Maximum concurrent data connections for this tunnel.
@@ -157,7 +124,8 @@ impl TunnelArgs {
     }
 }
 
-/// Top-level CLI arguments.
+/// Top-level CLI arguments. Every optional field stays `Option` so the conf
+/// layer can tell "explicitly passed" apart from "unset".
 #[derive(Parser, Debug)]
 #[command(
     author,
@@ -178,7 +146,7 @@ pub struct Args {
 
     /// Keep running in the foreground; by default LTR moves to the background
     /// after printing its startup summary.
-    #[arg(short = 'f', long = "front", env = "LTR_FRONT", action = ArgAction::SetTrue)]
+    #[arg(short = 'f', long = "front", action = ArgAction::SetTrue)]
     pub front: bool,
 
     /// List exposed ports from running LTR instances.
@@ -197,25 +165,24 @@ pub struct Args {
     pub web: WebConsoleArgs,
 
     /// Log filter, for example info or ltr_cli=debug.
-    #[arg(
-        long = "log-level",
-        env = "LTR_LOG_LEVEL",
-        default_value = "info",
-        hide = true
-    )]
-    pub log_level: String,
+    #[arg(long = "log-level", hide = true)]
+    pub log_level: Option<String>,
 
     /// Emit structured JSON logs instead of human-readable logs.
-    #[arg(
-        long = "log-json",
-        env = "LTR_LOG_JSON",
-        default_value_t = false,
-        hide = true
-    )]
+    #[arg(long = "log-json", action = ArgAction::SetTrue, hide = true)]
     pub log_json: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Args {
+    /// Returns true for quick one-shot commands that never daemonize.
+    pub fn is_quick(&self) -> bool {
+        self.list
+            || self.stop.is_some()
+            || matches!(self.command, Some(Command::Conf(_)))
+    }
 }
 
 /// Parses CLI arguments.
@@ -223,18 +190,22 @@ pub fn parse_args() -> Args {
     parse_args_from(env::args_os())
 }
 
-/// Initialize logging from parsed CLI and environment settings.
-pub fn init_logging(args: &Args) {
-    init_logging_into(args, None);
+/// Initialize logging with resolved settings.
+pub fn init_logging(log_level: &str, log_json: bool) {
+    init_logging_into(log_level, log_json, None);
 }
 
 /// Initialize logging, optionally appending to a log file instead of writing
 /// to the terminal (background mode).
-pub fn init_logging_into(args: &Args, file: Option<daemon::LogFileWriter>) {
-    let filter = tracing_subscriber::EnvFilter::try_new(&args.log_level)
+pub fn init_logging_into(
+    log_level: &str,
+    log_json: bool,
+    file: Option<daemon::LogFileWriter>,
+) {
+    let filter = tracing_subscriber::EnvFilter::try_new(log_level)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    match (args.log_json, file) {
+    match (log_json, file) {
         (true, Some(writer)) => builder.json().with_writer(writer).init(),
         (true, None) => builder.json().init(),
         (false, Some(writer)) => builder.with_writer(writer).init(),
@@ -259,6 +230,9 @@ pub enum Command {
 
     /// Exposes local SSH through a remote relay.
     Ssh(SshArgs),
+
+    /// Manages the persistent configuration file.
+    Conf(ConfArgs),
 
     /// Runs the LTR relay server.
     Server(ServerArgs),
@@ -290,70 +264,211 @@ pub struct SshArgs {
     pub ssh_local: Option<String>,
 }
 
-/// Server CLI arguments.
+/// Configuration management CLI arguments.
 #[derive(clap::Args, Debug, Clone)]
+pub struct ConfArgs {
+    #[command(subcommand)]
+    pub action: ConfAction,
+}
+
+/// `ltr conf` sub-actions.
+#[derive(Subcommand, Debug, Clone)]
+pub enum ConfAction {
+    /// Shows all settings, or one key with its value and source.
+    Get { key: Option<String> },
+
+    /// Saves a setting to the config file.
+    Set { key: String, value: String },
+
+    /// Removes a setting from the config file.
+    Unset { key: String },
+}
+
+/// Server CLI arguments.
+#[derive(clap::Args, Debug, Clone, Default)]
 pub struct ServerArgs {
     /// Minimum accepted TCP port number.
-    #[arg(long, default_value_t = 1024, env = "LTR_MIN_PORT", hide = true)]
-    pub min_port: u16,
+    #[arg(long, hide = true)]
+    pub min_port: Option<u16>,
 
     /// Maximum accepted TCP port number.
-    #[arg(long, default_value_t = 65535, env = "LTR_MAX_PORT", hide = true)]
-    pub max_port: u16,
+    #[arg(long, hide = true)]
+    pub max_port: Option<u16>,
 
     /// Optional secret for authentication.
-    #[arg(
-        short = 'S',
-        long,
-        env = "LTR_SECRET",
-        hide_env_values = true,
-        hide = true
-    )]
+    #[arg(long, hide = true)]
     pub secret: Option<String>,
 
     /// IP address to bind to, clients must reach this.
-    #[arg(long, default_value = "0.0.0.0", hide = true)]
-    pub bind_addr: IpAddr,
+    #[arg(long, hide = true)]
+    pub bind_addr: Option<IpAddr>,
 
     /// IP address where tunnels will listen on, defaults to --bind-addr.
     #[arg(long, hide = true)]
     pub bind_tunnels: Option<IpAddr>,
 
     /// Disable tunnel TLS. TLS is enabled by default with a generated certificate.
-    #[arg(
-        long = "no-tls",
-        env = "LTR_NO_TLS",
-        action = ArgAction::SetTrue,
-        hide = true
-    )]
+    #[arg(long = "no-tls", action = ArgAction::SetTrue, hide = true)]
     pub no_tls: bool,
 
     /// PEM certificate overriding the default generated tunnel certificate.
-    #[arg(
-        long = "tls-cert",
-        env = "LTR_TLS_CERT",
-        value_name = "PATH",
-        hide = true
-    )]
+    #[arg(long = "tls-cert", value_name = "PATH", hide = true)]
     pub tls_cert: Option<PathBuf>,
 
     /// PEM private key used by optional tunnel TLS.
-    #[arg(
-        long = "tls-key",
-        env = "LTR_TLS_KEY",
-        value_name = "PATH",
-        hide = true
-    )]
+    #[arg(long = "tls-key", value_name = "PATH", hide = true)]
     pub tls_key: Option<PathBuf>,
 
     /// CA PEM used to require client certificates during tunnel TLS.
-    #[arg(
-        long = "tls-client-ca",
-        env = "LTR_TLS_CLIENT_CA",
-        value_name = "PATH",
-        hide = true
-    )]
+    #[arg(long = "tls-client-ca", value_name = "PATH", hide = true)]
     pub tls_client_ca: Option<PathBuf>,
+}
+
+/// Fully resolved settings for one invocation: CLI > config file > `LTR_*`
+/// environment variables > built-in defaults.
+#[derive(Debug, Clone)]
+pub struct Eff {
+    /// Remote relay server.
+    pub to: Option<String>,
+    /// Remote port to request, when pinned.
+    pub dport: Option<u16>,
+    /// Shared authentication secret.
+    pub secret: Option<String>,
+    /// Whether TLS is disabled.
+    pub no_tls: bool,
+    /// CA PEM for relay TLS validation.
+    pub tls_ca: Option<PathBuf>,
+    /// SHA-256 fingerprint for relay TLS validation.
+    pub tls_fingerprint: Option<String>,
+    /// TLS server name override.
+    pub tls_server_name: Option<String>,
+    /// Client certificate PEM for mutual tunnel TLS.
+    pub tls_client_cert: Option<PathBuf>,
+    /// Client private key PEM for mutual tunnel TLS.
+    pub tls_client_key: Option<PathBuf>,
+    /// Maximum concurrent data connections for CLI tunnels.
+    pub max_connections: usize,
+    /// Whether the command stays in the foreground.
+    pub front: bool,
+    /// Log filter.
+    pub log_level: String,
+    /// Whether logs are structured JSON.
+    pub log_json: bool,
+    /// Local web console bind address.
+    pub web_addr: SocketAddr,
+    /// Web console bearer token.
+    pub web_token: Option<String>,
+    /// Web console tunnel limit.
+    pub web_max_tunnels: usize,
+    /// Web console per-tunnel connection limit.
+    pub web_max_connections: usize,
+    /// Web console retained log lines.
+    pub web_max_log_lines: usize,
+    /// PEM certificate for remote Web HTTPS.
+    pub web_cert: Option<PathBuf>,
+    /// PEM private key for remote Web HTTPS.
+    pub web_key: Option<PathBuf>,
+    /// Local SSH endpoint for `ltr ssh`.
+    pub ssh_local: Option<String>,
+    /// Server: minimum accepted tunnel port.
+    pub min_port: u16,
+    /// Server: maximum accepted tunnel port.
+    pub max_port: u16,
+    /// Server: control bind address.
+    pub bind_addr: IpAddr,
+    /// Server: tunnel listener address override.
+    pub bind_tunnels: Option<IpAddr>,
+    /// Server: PEM certificate override for tunnel TLS.
+    pub tls_cert: Option<PathBuf>,
+    /// Server: PEM private key for tunnel TLS.
+    pub tls_key: Option<PathBuf>,
+    /// Server: CA PEM requiring client certificates.
+    pub tls_client_ca: Option<PathBuf>,
+}
+
+impl Eff {
+    /// Resolves every setting from the CLI layers, the config file, the
+    /// environment, and the registry defaults.
+    pub fn resolve(args: &Args, file: &FileConfig) -> Self {
+        let tunnel = match &args.command {
+            Some(Command::Web(web)) => web.tunnel.merged_over(&args.tunnel),
+            Some(Command::Ssh(ssh)) => ssh.tunnel.merged_over(&args.tunnel),
+            _ => args.tunnel.clone(),
+        };
+        let (web_cert, web_key) = match &args.command {
+            Some(Command::Web(web)) => (web.web_cert.clone(), web.web_key.clone()),
+            _ => (None, None),
+        };
+        let ssh_local = match &args.command {
+            Some(Command::Ssh(ssh)) => ssh.ssh_local.clone(),
+            _ => None,
+        };
+        let server = match &args.command {
+            Some(Command::Server(server)) => server.clone(),
+            _ => ServerArgs::default(),
+        };
+        Self {
+            to: conf::layered_str("to", tunnel.to, file),
+            dport: conf::layered_u16("dport", tunnel.dport, file),
+            secret: conf::layered_str("secret", tunnel.secret, file),
+            no_tls: conf::layered_flag("no-tls", tunnel.no_tls, file).unwrap_or(false),
+            tls_ca: conf::layered_path("tls-ca", tunnel.tls_ca, file),
+            tls_fingerprint: conf::layered_str("tls-fingerprint", tunnel.tls_fingerprint, file),
+            tls_server_name: conf::layered_str(
+                "tls-server-name",
+                tunnel.tls_server_name,
+                file,
+            ),
+            tls_client_cert: conf::layered_path(
+                "tls-client-cert",
+                tunnel.tls_client_cert,
+                file,
+            ),
+            tls_client_key: conf::layered_path("tls-client-key", tunnel.tls_client_key, file),
+            max_connections: conf::layered_usize(
+                "max-connections",
+                tunnel.max_connections,
+                file,
+            )
+            .unwrap_or(DEFAULT_MAX_ACTIVE_CONNECTIONS),
+            front: conf::layered_flag("front", args.front, file).unwrap_or(false),
+            log_level: conf::layered_str("log-level", args.log_level.clone(), file)
+                .unwrap_or_else(|| "info".to_string()),
+            log_json: conf::layered_flag("log-json", args.log_json, file).unwrap_or(false),
+            web_addr: conf::layered_addr("web-addr", args.web.web_addr, file)
+                .unwrap_or_else(|| "127.0.0.1:7836".parse().expect("default web addr")),
+            web_token: conf::layered_str("web-token", args.web.web_token.clone(), file),
+            web_max_tunnels: conf::layered_usize(
+                "web-max-tunnels",
+                args.web.web_max_tunnels,
+                file,
+            )
+            .unwrap_or(64),
+            web_max_connections: conf::layered_usize(
+                "web-max-connections",
+                args.web.web_max_connections,
+                file,
+            )
+            .unwrap_or(256),
+            web_max_log_lines: conf::layered_usize(
+                "web-max-log-lines",
+                args.web.web_max_log_lines,
+                file,
+            )
+            .unwrap_or(500),
+            web_cert: conf::layered_path("web-cert", web_cert, file),
+            web_key: conf::layered_path("web-key", web_key, file),
+            ssh_local: conf::layered_str("ssh-local", ssh_local, file),
+            min_port: conf::layered_u16("min-port", server.min_port, file).unwrap_or(1024),
+            max_port: conf::layered_u16("max-port", server.max_port, file).unwrap_or(65535),
+            bind_addr: conf::layered_ip("bind-addr", server.bind_addr, file)
+                .unwrap_or(IpAddr::from([0, 0, 0, 0])),
+            bind_tunnels: conf::layered_ip("bind-tunnels", server.bind_tunnels, file),
+            tls_cert: conf::layered_path("tls-cert", server.tls_cert, file),
+            tls_key: conf::layered_path("tls-key", server.tls_key, file),
+            tls_client_ca: conf::layered_path("tls-client-ca", server.tls_client_ca, file),
+        }
+    }
 }
 
 /// Parses a local endpoint: a bare port means 127.0.0.1.
@@ -388,43 +503,21 @@ fn local_target_value(value: &str) -> Result<String, String> {
 }
 
 /// Returns the relay address or fails with actionable guidance.
-pub fn require_to(to: Option<&str>) -> Result<String> {
-    match to.map(str::trim).filter(|to| !to.is_empty()) {
+pub fn require_to(eff: &Eff) -> Result<String> {
+    match eff.to.as_deref().map(str::trim).filter(|to| !to.is_empty()) {
         Some(to) => Ok(to.to_string()),
         None => bail!(
             "no relay server configured for this tunnel.\n\n\
              Specify one now:\n  ltr 8000 -t your-server.example\n\n\
              Or save a default:\n  ltr conf set to your-server.example\n\n\
-             The LTR_SERVER environment variable is also respected."
+             Checked in order: command line, config file ({}), LTR_SERVER.",
+            FileConfig::path().display()
         ),
     }
 }
 
-/// Validates a layer of tunnel arguments.
-fn validate_tunnel_args(tunnel: &TunnelArgs, cmd: &mut clap::Command) -> Result<(), clap::Error> {
-    if tunnel.no_tls
-        && (tunnel.tls_ca.is_some()
-            || tunnel.tls_fingerprint.is_some()
-            || tunnel.tls_server_name.is_some()
-            || tunnel.tls_client_cert.is_some()
-            || tunnel.tls_client_key.is_some())
-    {
-        return Err(cmd.error(
-            ErrorKind::InvalidValue,
-            "--tls-ca, --tls-fingerprint, --tls-server-name, --tls-client-cert, and --tls-client-key cannot be used with --no-tls",
-        ));
-    }
-    if tunnel.tls_client_cert.is_some() != tunnel.tls_client_key.is_some() {
-        return Err(cmd.error(
-            ErrorKind::InvalidValue,
-            "--tls-client-cert and --tls-client-key must be provided together",
-        ));
-    }
-    Ok(())
-}
-
-/// Validates parsed CLI arguments.
-pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
+/// Validates the resolved invocation.
+pub fn validate(args: &Args, eff: &Eff) -> std::result::Result<(), clap::Error> {
     let mut cmd = Args::command();
     if args.target.is_some() && args.command.is_some() {
         return Err(cmd.error(
@@ -432,49 +525,53 @@ pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
             "choose either a [HOST:]PORT or a subcommand, not both",
         ));
     }
-    validate_tunnel_args(&args.tunnel, &mut cmd)?;
-    match &args.command {
-        Some(Command::Web(web_args)) => {
-            if !args.web.web_addr.ip().is_loopback() {
-                return Err(cmd.error(
-                    ErrorKind::InvalidValue,
-                    "web mode requires --web-addr to bind to loopback",
-                ));
-            }
-            if web_args.web_cert.is_some() != web_args.web_key.is_some() {
-                return Err(cmd.error(
-                    ErrorKind::InvalidValue,
-                    "--web-cert and --web-key must be provided together",
-                ));
-            }
-            validate_tunnel_args(&web_args.tunnel, &mut cmd)?;
-        }
-        Some(Command::Ssh(ssh_args)) => {
-            validate_tunnel_args(&ssh_args.tunnel, &mut cmd)?;
-        }
-        Some(Command::Server(server_args)) => {
-            if server_args.tls_cert.is_some() != server_args.tls_key.is_some() {
-                return Err(cmd.error(
-                    ErrorKind::InvalidValue,
-                    "--tls-cert and --tls-key must be provided together",
-                ));
-            }
-            if server_args.tls_client_ca.is_some() && server_args.no_tls {
-                return Err(cmd.error(
-                    ErrorKind::InvalidValue,
-                    "--tls-client-ca cannot be used with --no-tls",
-                ));
-            }
-            if server_args.no_tls
-                && (server_args.tls_cert.is_some() || server_args.tls_key.is_some())
-            {
-                return Err(cmd.error(
-                    ErrorKind::InvalidValue,
-                    "--tls-cert and --tls-key cannot be used with --no-tls",
-                ));
-            }
-        }
-        None => {}
+    if eff.no_tls
+        && (eff.tls_ca.is_some()
+            || eff.tls_fingerprint.is_some()
+            || eff.tls_server_name.is_some()
+            || eff.tls_client_cert.is_some()
+            || eff.tls_client_key.is_some())
+    {
+        return Err(cmd.error(
+            ErrorKind::InvalidValue,
+            "--tls-ca, --tls-fingerprint, --tls-server-name, --tls-client-cert, and --tls-client-key cannot be used with --no-tls",
+        ));
+    }
+    if eff.tls_client_cert.is_some() != eff.tls_client_key.is_some() {
+        return Err(cmd.error(
+            ErrorKind::InvalidValue,
+            "--tls-client-cert and --tls-client-key must be provided together",
+        ));
+    }
+    if eff.web_cert.is_some() != eff.web_key.is_some() {
+        return Err(cmd.error(
+            ErrorKind::InvalidValue,
+            "--web-cert and --web-key must be provided together",
+        ));
+    }
+    if eff.tls_cert.is_some() != eff.tls_key.is_some() {
+        return Err(cmd.error(
+            ErrorKind::InvalidValue,
+            "--tls-cert and --tls-key must be provided together",
+        ));
+    }
+    if eff.tls_client_ca.is_some() && eff.no_tls {
+        return Err(cmd.error(
+            ErrorKind::InvalidValue,
+            "--tls-client-ca cannot be used with --no-tls",
+        ));
+    }
+    if eff.no_tls && (eff.tls_cert.is_some() || eff.tls_key.is_some()) {
+        return Err(cmd.error(
+            ErrorKind::InvalidValue,
+            "--tls-cert and --tls-key cannot be used with --no-tls",
+        ));
+    }
+    if matches!(args.command, Some(Command::Web(_))) && !eff.web_addr.ip().is_loopback() {
+        return Err(cmd.error(
+            ErrorKind::InvalidValue,
+            "web mode requires --web-addr to bind to loopback",
+        ));
     }
     Ok(())
 }
@@ -490,9 +587,9 @@ fn daemon_ready_hook(extra_lines: Vec<String>) -> OnReady {
     })
 }
 
-/// Runs parsed CLI command.
-pub async fn run(args: Args) -> Result<()> {
-    if let Err(err) = validate_args(&args) {
+/// Runs parsed CLI command with fully resolved settings.
+pub async fn run(args: Args, eff: Eff) -> Result<()> {
+    if let Err(err) = validate(&args, &eff) {
         err.exit();
     }
 
@@ -501,90 +598,160 @@ pub async fn run(args: Args) -> Result<()> {
         bail!("listing and stopping running instances is not available yet");
     }
 
-    match (&args.command, args.target.as_deref()) {
-        (Some(Command::Server(server_args)), _) => {
-            let port_range = server_args.min_port..=server_args.max_port;
-            if port_range.is_empty() {
-                Args::command()
-                    .error(ErrorKind::InvalidValue, "port range is empty")
-                    .exit();
-            }
-            let bind_addr = server_args.bind_addr;
-            let mut server = Server::new(port_range, server_args.secret.as_deref());
-            server.set_bind_addr(server_args.bind_addr);
-            server.set_bind_tunnels(server_args.bind_tunnels.unwrap_or(server_args.bind_addr));
-            let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
-            daemon::spawn_finish(ready_rx);
-            server.set_on_ready(Box::new(move || {
-                let _ = ready_tx.send(vec![format!(
-                    "LTR server listening on {bind_addr}:{CONTROL_PORT}"
-                )]);
-            }));
-            if !server_args.no_tls {
-                let tls = match (&server_args.tls_cert, &server_args.tls_key) {
-                    (Some(cert), Some(key)) => {
-                        transport::load_server_tls(cert, key, server_args.tls_client_ca.as_deref())?
-                    }
-                    (None, None) => {
-                        let (tls, material) = transport::load_or_generate_server_tls(
-                            server_args.tls_client_ca.as_deref(),
-                        )?;
-                        println!(
-                            "Tunnel TLS certificate stored at: {}",
-                            material.cert_path.display()
-                        );
-                        println!(
-                            "Tunnel TLS private key stored at: {}",
-                            material.key_path.display()
-                        );
-                        println!("Tunnel TLS SHA-256 fingerprint: {}", material.fingerprint);
-                        tls
-                    }
-                    _ => unreachable!("server TLS certificate pair validated above"),
-                };
-                server.set_tls(tls);
-            }
-            server.listen().await?;
-        }
-        (Some(Command::Web(web_args)), _) => {
-            run_web_remote(&args, web_args).await?;
-        }
-        (Some(Command::Ssh(ssh_args)), _) => {
-            let tunnel = ssh_args.tunnel.merged_over(&args.tunnel);
+    match &args.command {
+        Some(Command::Conf(conf_args)) => run_conf(conf_args).await,
+        Some(Command::Server(_)) => run_server(&eff).await,
+        Some(Command::Web(_)) => run_web_remote(&eff).await,
+        Some(Command::Ssh(_)) => {
             let (local_host, local_port) =
-                parse_local_target(ssh_args.ssh_local.as_deref().unwrap_or("22"))?;
-            let to = require_to(tunnel.to.as_deref())?;
+                parse_local_target(eff.ssh_local.as_deref().unwrap_or("22"))?;
+            let to = require_to(&eff)?;
             let local_args =
-                build_local_args(&tunnel, local_host, local_port, to, SSH_DEFAULT_REMOTE_PORT);
-            run_tunnel(local_args, "LTR ssh tunnel").await?;
+                build_local_args(&eff, local_host, local_port, to, SSH_DEFAULT_REMOTE_PORT);
+            run_tunnel(local_args, "LTR ssh tunnel").await
         }
-        (None, Some(target)) => {
-            let (local_host, local_port) = parse_local_target(target)?;
-            let to = require_to(args.tunnel.to.as_deref())?;
-            let local_args = build_local_args(&args.tunnel, local_host, local_port, to, 0);
-            run_tunnel(local_args, "LTR local tunnel").await?;
-        }
-        (None, None) => {
-            return run_web_local(
-                args.web.web_addr,
-                args.web.web_token,
-                web_limits(
-                    args.web.web_max_tunnels,
-                    args.web.web_max_connections,
-                    args.web.web_max_log_lines,
-                ),
-                Some(daemon_ready_hook(Vec::new())),
-            )
-            .await;
-        }
+        None => match args.target.as_deref() {
+            Some(target) => {
+                let (local_host, local_port) = parse_local_target(target)?;
+                let to = require_to(&eff)?;
+                let local_args = build_local_args(&eff, local_host, local_port, to, 0);
+                run_tunnel(local_args, "LTR local tunnel").await
+            }
+            None => {
+                run_web_local(
+                    eff.web_addr,
+                    eff.web_token.clone(),
+                    web_limits(
+                        eff.web_max_tunnels,
+                        eff.web_max_connections,
+                        eff.web_max_log_lines,
+                    ),
+                    Some(daemon_ready_hook(Vec::new())),
+                )
+                .await
+            }
+        },
     }
-
-    Ok(())
 }
 
-/// Builds library-level tunnel arguments from the resolved CLI layer.
+/// Runs the `ltr conf` sub-actions: get, set, unset.
+async fn run_conf(conf_args: &ConfArgs) -> Result<()> {
+    match &conf_args.action {
+        ConfAction::Get { key } => {
+            let file = FileConfig::load()?;
+            match key {
+                Some(key) => {
+                    let spec = conf::key_spec(key).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown config key {key:?}; run `ltr conf get` to list valid keys"
+                        )
+                    })?;
+                    match conf::resolve_below_cli(key, &file) {
+                        Some(resolved) => println!(
+                            "{key} = {}   (from {})",
+                            resolved.value, resolved.source
+                        ),
+                        None => println!("{key} = (not set)"),
+                    }
+                    println!("# {}", spec.help);
+                }
+                None => {
+                    println!("Config file: {}", FileConfig::path().display());
+                    println!(
+                        "{:<KEY$} {:<VALUE$} {:<SOURCE$} DESCRIPTION",
+                        "KEY",
+                        "VALUE",
+                        "SOURCE",
+                        KEY = 18,
+                        VALUE = 28,
+                        SOURCE = 7
+                    );
+                    for spec in conf::KEYS {
+                        let resolved = conf::resolve_below_cli(spec.name, &file);
+                        match resolved {
+                            Some(resolved) => println!(
+                                "{:<18} {:<28} {:<7} {}",
+                                spec.name, resolved.value, resolved.source, spec.help
+                            ),
+                            None => println!(
+                                "{:<18} {:<28} {:<7} {}",
+                                spec.name, "-", "-", spec.help
+                            ),
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        ConfAction::Set { key, value } => {
+            let mut file = FileConfig::load()?;
+            file.set(key, value)?;
+            file.save()?;
+            println!(
+                "{} = {value}   (saved to {})",
+                key,
+                FileConfig::path().display()
+            );
+            Ok(())
+        }
+        ConfAction::Unset { key } => {
+            let mut file = FileConfig::load()?;
+            file.unset(key)?;
+            file.save()?;
+            println!("{key} unset   ({})", FileConfig::path().display());
+            Ok(())
+        }
+    }
+}
+
+/// Runs the relay server.
+async fn run_server(eff: &Eff) -> Result<()> {
+    let port_range = eff.min_port..=eff.max_port;
+    if port_range.is_empty() {
+        Args::command()
+            .error(ErrorKind::InvalidValue, "port range is empty")
+            .exit();
+    }
+    let bind_addr = eff.bind_addr;
+    let mut server = Server::new(port_range, eff.secret.as_deref());
+    server.set_bind_addr(eff.bind_addr);
+    server.set_bind_tunnels(eff.bind_tunnels.unwrap_or(eff.bind_addr));
+    let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
+    daemon::spawn_finish(ready_rx);
+    server.set_on_ready(Box::new(move || {
+        let _ = ready_tx.send(vec![format!(
+            "LTR server listening on {bind_addr}:{CONTROL_PORT}"
+        )]);
+    }));
+    if !eff.no_tls {
+        let tls = match (&eff.tls_cert, &eff.tls_key) {
+            (Some(cert), Some(key)) => {
+                transport::load_server_tls(cert, key, eff.tls_client_ca.as_deref())?
+            }
+            (None, None) => {
+                let (tls, material) =
+                    transport::load_or_generate_server_tls(eff.tls_client_ca.as_deref())?;
+                println!(
+                    "Tunnel TLS certificate stored at: {}",
+                    material.cert_path.display()
+                );
+                println!(
+                    "Tunnel TLS private key stored at: {}",
+                    material.key_path.display()
+                );
+                println!("Tunnel TLS SHA-256 fingerprint: {}", material.fingerprint);
+                tls
+            }
+            _ => unreachable!("server TLS certificate pair validated above"),
+        };
+        server.set_tls(tls);
+    }
+    server.listen().await
+}
+
+/// Builds library-level tunnel arguments from resolved settings.
 fn build_local_args(
-    tunnel: &TunnelArgs,
+    eff: &Eff,
     local_host: String,
     local_port: u16,
     to: String,
@@ -594,17 +761,15 @@ fn build_local_args(
         local_port,
         local_host,
         to,
-        port: tunnel.dport.unwrap_or(default_port),
-        secret: tunnel.secret.clone(),
-        no_tls: tunnel.no_tls,
-        tls_ca: tunnel.tls_ca.clone(),
-        tls_fingerprint: tunnel.tls_fingerprint.clone(),
-        tls_server_name: tunnel.tls_server_name.clone(),
-        tls_client_cert: tunnel.tls_client_cert.clone(),
-        tls_client_key: tunnel.tls_client_key.clone(),
-        max_connections: tunnel
-            .max_connections
-            .unwrap_or(DEFAULT_MAX_ACTIVE_CONNECTIONS),
+        port: eff.dport.unwrap_or(default_port),
+        secret: eff.secret.clone(),
+        no_tls: eff.no_tls,
+        tls_ca: eff.tls_ca.clone(),
+        tls_fingerprint: eff.tls_fingerprint.clone(),
+        tls_server_name: eff.tls_server_name.clone(),
+        tls_client_cert: eff.tls_client_cert.clone(),
+        tls_client_key: eff.tls_client_key.clone(),
+        max_connections: eff.max_connections,
     }
 }
 
@@ -709,10 +874,9 @@ pub async fn run_web_local(
 }
 
 /// Exposes the local web console through a remote relay (`ltr web`).
-pub async fn run_web_remote(args: &Args, web_args: &WebArgs) -> Result<()> {
-    let tunnel = web_args.tunnel.merged_over(&args.tunnel);
-    let to = require_to(tunnel.to.as_deref())?;
-    let remote_port = tunnel.dport.unwrap_or(DEFAULT_WEB_PORT);
+pub async fn run_web_remote(eff: &Eff) -> Result<()> {
+    let to = require_to(eff)?;
+    let remote_port = eff.dport.unwrap_or(DEFAULT_WEB_PORT);
     let session = SessionInfo {
         mode: SessionMode::RemoteWeb,
         warnings: vec![WEB_RISK_WARNING.to_string()],
@@ -720,22 +884,22 @@ pub async fn run_web_remote(args: &Args, web_args: &WebArgs) -> Result<()> {
         web_remote_url: Some(format!("https://{to}:{remote_port}")),
         ssh_remote_endpoint: None,
     };
-    let token_was_generated = args.web.web_token.is_none();
-    let certificate_was_generated = web_args.web_cert.is_none();
-    let web_token = credentials::load_or_generate(args.web.web_token.clone())?;
+    let token_was_generated = eff.web_token.is_none();
+    let certificate_was_generated = eff.web_cert.is_none();
+    let web_token = credentials::load_or_generate(eff.web_token.clone())?;
     let web_tls = credentials::load_or_generate_tls(
         &to,
-        web_args.web_cert.as_deref(),
-        web_args.web_key.as_deref(),
+        eff.web_cert.as_deref(),
+        eff.web_key.as_deref(),
     )?;
     let state = WebState::with_limits_and_store(
         session,
         Some(web_token.clone()),
         Some(web_tls),
         web_limits(
-            args.web.web_max_tunnels,
-            args.web.web_max_connections,
-            args.web.web_max_log_lines,
+            eff.web_max_tunnels,
+            eff.web_max_connections,
+            eff.web_max_log_lines,
         ),
         Some(web::default_tunnels_path()),
     );
@@ -744,17 +908,17 @@ pub async fn run_web_remote(args: &Args, web_args: &WebArgs) -> Result<()> {
         role: SystemTunnelRole::WebConsole,
         config: TunnelConfig {
             name: "Web Console".to_string(),
-            local_port: args.web.web_addr.port(),
+            local_port: eff.web_addr.port(),
             to: to.clone(),
             port: Some(remote_port),
             local_host: "127.0.0.1".to_string(),
-            secret: tunnel.secret.clone(),
+            secret: eff.secret.clone(),
         },
         display_url: Some(format!("https://{to}:{remote_port}")),
     }];
     web::run_managed_on_ready(
         web::ServeConfig {
-            addr: args.web.web_addr,
+            addr: eff.web_addr,
             session: state.session().await,
         },
         state,
@@ -769,12 +933,29 @@ pub async fn run_web_remote(args: &Args, web_args: &WebArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use clap::{error::ErrorKind, CommandFactory, Parser};
 
     use super::{
-        parse_local_target, require_to, validate_args, Args, Command, WebArgs, DEFAULT_WEB_PORT,
+        parse_local_target, require_to, validate, Eff, Args, Command, DEFAULT_WEB_PORT,
         SSH_DEFAULT_REMOTE_PORT,
     };
+    use crate::conf::FileConfig;
+
+    fn empty_eff(args: &Args) -> Eff {
+        let _guard = crate::conf::TEST_ENV_GUARD
+            .lock()
+            .expect("environment lock should not be poisoned");
+        Eff::resolve(args, &FileConfig::default())
+    }
+
+    fn guarded_env<F: FnOnce()>(f: F) {
+        let _guard = crate::conf::TEST_ENV_GUARD
+            .lock()
+            .expect("environment lock should not be poisoned");
+        f();
+    }
 
     #[test]
     fn zero_args_start_local_web_console() {
@@ -782,7 +963,10 @@ mod tests {
         assert!(args.command.is_none());
         assert!(args.target.is_none());
         assert!(!args.front);
-        assert_eq!(args.web.web_addr.to_string(), "127.0.0.1:7836");
+        let eff = empty_eff(&args);
+        assert_eq!(eff.web_addr.to_string(), "127.0.0.1:7836");
+        assert!(!eff.front);
+        assert_eq!(eff.log_level, "info");
     }
 
     #[test]
@@ -794,9 +978,15 @@ mod tests {
 
     #[test]
     fn parse_host_port_target_with_tunnel_flags() {
-        let args =
-            Args::try_parse_from(["ltr", "192.168.1.5:8000", "-t", "example.com", "-p", "9000"])
-                .expect("parse should succeed");
+        let args = Args::try_parse_from([
+            "ltr",
+            "192.168.1.5:8000",
+            "-t",
+            "example.com",
+            "-p",
+            "9000",
+        ])
+        .expect("parse should succeed");
         assert_eq!(args.target.as_deref(), Some("192.168.1.5:8000"));
         assert_eq!(args.tunnel.to.as_deref(), Some("example.com"));
         assert_eq!(args.tunnel.dport, Some(9000));
@@ -818,6 +1008,20 @@ mod tests {
 
         let args = Args::try_parse_from(["ltr"]).expect("parse should succeed");
         assert_eq!(args.stop, None);
+        assert!(args.is_quick() == false);
+    }
+
+    #[test]
+    fn quick_commands_never_daemonize() {
+        let args = Args::try_parse_from(["ltr", "-l"]).expect("parse should succeed");
+        assert!(args.is_quick());
+        let args = Args::try_parse_from(["ltr", "-s"]).expect("parse should succeed");
+        assert!(args.is_quick());
+        let args =
+            Args::try_parse_from(["ltr", "conf", "get"]).expect("parse should succeed");
+        assert!(args.is_quick());
+        let args = Args::try_parse_from(["ltr", "8000"]).expect("parse should succeed");
+        assert!(!args.is_quick());
     }
 
     #[test]
@@ -843,37 +1047,78 @@ mod tests {
     fn web_subcommand_parses_with_tunnel_flags_after_it() {
         let args = Args::try_parse_from(["ltr", "web", "-t", "example.com", "-p", "9000"])
             .expect("parse should succeed");
-        let Some(Command::Web(WebArgs { tunnel, .. })) = &args.command else {
+        let Some(Command::Web(web_args)) = &args.command else {
             panic!("expected web command");
         };
-        assert_eq!(tunnel.to.as_deref(), Some("example.com"));
-        assert_eq!(tunnel.dport, Some(9000));
+        assert_eq!(web_args.tunnel.to.as_deref(), Some("example.com"));
+        assert_eq!(web_args.tunnel.dport, Some(9000));
     }
 
     #[test]
     fn ssh_subcommand_parses_with_defaults() {
-        let args = Args::try_parse_from(["ltr", "ssh", "-t", "example.com"])
-            .expect("parse should succeed");
+        let args =
+            Args::try_parse_from(["ltr", "ssh", "-t", "example.com"]).expect("parse should succeed");
         assert!(matches!(args.command, Some(Command::Ssh(_))));
     }
 
     #[test]
-    fn top_level_tunnel_flags_reach_web_mode() {
-        let args = Args::try_parse_from(["ltr", "-t", "top.example", "web"])
+    fn conf_subcommand_parses() {
+        let args = Args::try_parse_from(["ltr", "conf", "get"])
             .expect("parse should succeed");
-        let Some(Command::Web(web_args)) = &args.command else {
-            panic!("expected web command");
-        };
-        let merged = web_args.tunnel.merged_over(&args.tunnel);
-        assert_eq!(merged.to.as_deref(), Some("top.example"));
+        assert!(matches!(args.command, Some(Command::Conf(_))));
+        let args = Args::try_parse_from(["ltr", "conf", "get", "to"])
+            .expect("parse should succeed");
+        assert!(matches!(args.command, Some(Command::Conf(_))));
+        let args = Args::try_parse_from(["ltr", "conf", "set", "to", "example.com"])
+            .expect("parse should succeed");
+        assert!(matches!(args.command, Some(Command::Conf(_))));
+        let args = Args::try_parse_from(["ltr", "conf", "unset", "to"])
+            .expect("parse should succeed");
+        assert!(matches!(args.command, Some(Command::Conf(_))));
+    }
 
-        let args = Args::try_parse_from(["ltr", "-t", "top.example", "web", "-t", "sub.example"])
-            .expect("parse should succeed");
-        let Some(Command::Web(web_args)) = &args.command else {
-            panic!("expected web command");
-        };
-        let merged = web_args.tunnel.merged_over(&args.tunnel);
-        assert_eq!(merged.to.as_deref(), Some("sub.example"));
+    #[test]
+    fn top_level_tunnel_flags_reach_subcommand_modes() {
+        let args =
+            Args::try_parse_from(["ltr", "-t", "top.example", "web"]).expect("parse should succeed");
+        let eff = empty_eff(&args);
+        assert_eq!(eff.to.as_deref(), Some("top.example"));
+
+        let args =
+            Args::try_parse_from(["ltr", "-t", "top.example", "web", "-t", "sub.example"])
+                .expect("parse should succeed");
+        let eff = empty_eff(&args);
+        assert_eq!(eff.to.as_deref(), Some("sub.example"));
+    }
+
+    #[test]
+    fn resolution_prefers_cli_over_file_over_env() {
+        guarded_env(|| {
+            env::remove_var("LTR_SERVER");
+            env::remove_var("LTR_LOG_LEVEL");
+
+            let mut file = FileConfig::default();
+            // File layer alone.
+            file.entries_for_test("to", "file.example");
+            let args = Args::try_parse_from(["ltr", "8000"]).expect("parse should succeed");
+            let eff = Eff::resolve(&args, &file);
+            assert_eq!(eff.to.as_deref(), Some("file.example"));
+
+            // CLI beats file.
+            let args = Args::try_parse_from(["ltr", "8000", "-t", "cli.example"])
+                .expect("parse should succeed");
+            let eff = Eff::resolve(&args, &file);
+            assert_eq!(eff.to.as_deref(), Some("cli.example"));
+
+            // Env beats default but loses to file.
+            env::set_var("LTR_LOG_LEVEL", "trace");
+            let eff = Eff::resolve(&args, &file);
+            assert_eq!(eff.log_level, "trace");
+            file.entries_for_test("log-level", "debug");
+            let eff = Eff::resolve(&args, &file);
+            assert_eq!(eff.log_level, "debug");
+            env::remove_var("LTR_LOG_LEVEL");
+        });
     }
 
     #[test]
@@ -885,13 +1130,7 @@ mod tests {
     #[test]
     fn help_shows_only_core_flags() {
         let help = Args::command().render_help().to_string();
-        for core in [
-            "-t, --to",
-            "-p, --dport",
-            "-f, --front",
-            "-l, --list",
-            "-s, --stop",
-        ] {
+        for core in ["-t, --to", "-p, --dport", "-f, --front", "-l, --list", "-s, --stop"] {
             assert!(help.contains(core), "help should show {core}");
         }
         for hidden in [
@@ -913,7 +1152,7 @@ mod tests {
         let help = Args::command().render_long_help().to_string();
         assert!(help.contains("ltr 8000 -t your-server.example"));
         assert!(help.contains("ltr web"));
-        assert!(help.contains("ltr ssh"));
+        assert!(help.contains("ltr conf set to"));
         assert!(!help.contains("npx @qinshower/ltr"));
     }
 
@@ -924,43 +1163,44 @@ mod tests {
     }
 
     #[test]
-    fn parse_logging_options() {
+    fn parse_hidden_logging_options() {
         let args = Args::try_parse_from(["ltr", "--log-level", "debug", "--log-json", "server"])
             .expect("parse should succeed");
-        assert_eq!(args.log_level, "debug");
+        assert_eq!(args.log_level.as_deref(), Some("debug"));
         assert!(args.log_json);
-    }
-
-    #[test]
-    fn parse_server_no_tls_flag() {
-        let args =
-            Args::try_parse_from(["ltr", "server", "--no-tls"]).expect("parse should succeed");
-        let Some(Command::Server(server)) = args.command else {
-            panic!("expected server command");
-        };
-        assert!(server.no_tls);
     }
 
     #[test]
     fn target_and_subcommand_are_mutually_exclusive() {
         let args = Args::try_parse_from(["ltr", "8000", "server"]).expect("parse should succeed");
-        let err = validate_args(&args).expect_err("validation should fail");
+        let eff = empty_eff(&args);
+        let err = validate(&args, &eff).expect_err("validation should fail");
         assert_eq!(err.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]
     fn web_requires_loopback_addr() {
-        let args = Args::try_parse_from(["ltr", "--web-addr", "0.0.0.0:7836", "web", "-t", "host"])
-            .expect("parse should succeed");
-        let err = validate_args(&args).expect_err("validation should fail");
+        let args = Args::try_parse_from([
+            "ltr",
+            "--web-addr",
+            "0.0.0.0:7836",
+            "web",
+            "-t",
+            "host",
+        ])
+        .expect("parse should succeed");
+        let eff = empty_eff(&args);
+        let err = validate(&args, &eff).expect_err("validation should fail");
         assert_eq!(err.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]
     fn tunnel_tls_conflicts_are_rejected() {
-        let args = Args::try_parse_from(["ltr", "8000", "-t", "h", "--no-tls", "--tls-ca", "/a"])
-            .expect("parse should succeed");
-        let err = validate_args(&args).expect_err("validation should fail");
+        let args =
+            Args::try_parse_from(["ltr", "8000", "-t", "h", "--no-tls", "--tls-ca", "/a"])
+                .expect("parse should succeed");
+        let eff = empty_eff(&args);
+        let err = validate(&args, &eff).expect_err("validation should fail");
         assert_eq!(err.kind(), ErrorKind::InvalidValue);
     }
 
@@ -990,16 +1230,23 @@ mod tests {
 
     #[test]
     fn require_to_error_is_actionable() {
-        let err = require_to(None).expect_err("missing to should fail");
+        let err = require_to(&Eff::resolve(
+            &Args::try_parse_from(["ltr", "8000"]).unwrap(),
+            &FileConfig::default(),
+        ))
+        .expect_err("missing to should fail");
         let message = format!("{err:#}");
         assert!(message.contains("ltr conf set to"));
         assert!(message.contains("LTR_SERVER"));
-        assert_eq!(require_to(Some(" example.com ")).unwrap(), "example.com");
+
+        let mut eff = empty_eff(&Args::try_parse_from(["ltr", "8000"]).unwrap());
+        eff.to = Some(" example.com ".to_string());
+        assert_eq!(require_to(&eff).unwrap(), "example.com");
     }
 
     #[test]
     fn web_port_constants() {
-        assert_eq!(super::DEFAULT_WEB_PORT, 7836);
-        assert_eq!(super::SSH_DEFAULT_REMOTE_PORT, 2222);
+        assert_eq!(DEFAULT_WEB_PORT, 7836);
+        assert_eq!(SSH_DEFAULT_REMOTE_PORT, 2222);
     }
 }

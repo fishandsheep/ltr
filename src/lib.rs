@@ -18,6 +18,7 @@
 
 /// CLI argument parsing and command dispatch.
 pub mod cli;
+pub mod conf;
 pub mod daemon;
 pub mod shared;
 /// Local web console for managing client tunnels.
