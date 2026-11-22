@@ -13,6 +13,9 @@ ekzhang/bore and now fully diverged.
 - src/: ltr-cli command parsing, orchestration, and the embedded Web control plane.
 - src/web/session.rs (API types), registry.rs (tunnel registry + TOML persistence),
   runtime.rs (per-tunnel runtime), state.rs (WebState facade).
+- src/conf.rs (settings registry + three-layer resolution), src/daemon.rs
+  (background re-exec), src/instances.rs (run registry for -l/-s),
+  src/update.rs (GitHub Releases self-update).
 - src/web/static/js/: zero-build ES-module frontend (vendored Preact + htm), design
   system "极简信号" in DESIGN.md; i18n dictionaries in i18n.mjs must stay zh/en
   key-parity.
@@ -22,9 +25,12 @@ ekzhang/bore and now fully diverged.
 - ci/ and .github/workflows/: cross-compilation and release automation.
 - PRODUCT.md and DESIGN.md: Web product and design references.
 
-User data on disk: `~/.config/ltr/tunnels.toml` (console tunnels, 0600, secrets
-included), `~/.config/ltr/known_hosts` (TOFU fingerprints, 0600), and generated TLS
-material under `~/.local/share/ltr/`.
+User data on disk: `~/.config/ltr/config.toml` (persistent settings, 0600,
+see src/conf.rs key registry; precedence CLI > file > `LTR_*` env > default),
+`~/.config/ltr/tunnels.toml` (console tunnels, 0600, secrets included),
+`~/.config/ltr/known_hosts` (TOFU fingerprints, 0600), generated TLS material and
+background logs under `~/.local/share/ltr/`, and the instance registry under
+`~/.local/share/ltr/run/`.
 
 Read docs/agents/issue-tracker.md for the issue workflow before changing
 spec-driven behaviour.
@@ -33,13 +39,20 @@ spec-driven behaviour.
 
 - cargo run: open the local Web console (zero-argument entry).
 - cargo run -- server: run an LTR relay server (TLS on by default).
-- cargo run -- local 8000 --to localhost: expose a local service.
-- cargo run -- bundle --to server.example: run Web plus SSH system tunnels.
+- cargo run -- 8000: expose a local port through the configured relay
+  (`ltr conf set to host` first, or pass `-t host`).
+- cargo run -- web / -- ssh: expose the console (remote 7836) or local SSH
+  (remote 2222) through a relay.
 
-Commands background themselves after printing the startup summary (pid,
-log directory under the data dir's `logs/`); pass `--front` (or set
-`LTR_FRONT=1`) to keep them attached to the terminal. Background mode is
-Unix-only; on Windows LTR falls back to the foreground with a notice.
+Commands background themselves after printing the startup summary (pid, log
+directory under the data dir's `logs/`); pass `--front` (or set `LTR_FRONT=1`)
+to keep them attached to the terminal. Background mode is Unix-only; on Windows
+LTR falls back to the foreground with a notice.
+
+Quick commands never daemonize: `ltr -l/--list`, `ltr -s/--stop [PORT]`,
+`ltr conf get|set|unset`, `ltr update`. Long-running modes register themselves
+under the data dir's `run/` registry so `-l` can list and `-s` can gracefully
+stop them (SIGTERM, then SIGKILL).
 - cargo test --workspace --all-targets: run the complete Rust suite.
 - cargo fmt --all -- --check: verify formatting.
 - cargo clippy --workspace --all-targets --all-features -- -D warnings: run lints.

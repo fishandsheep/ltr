@@ -5,14 +5,9 @@ use ltr_cli::daemon;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Behave like a classic Unix tool when stdout is piped into `head`: die
-    // silently on SIGPIPE instead of panicking on a broken pipe write.
-    #[cfg(unix)]
-    // SAFETY: restores the default signal disposition before any threads exist.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-
+    // NOTE: SIGPIPE stays ignored (the Rust default). Restoring its default
+    // disposition would kill long-running modes whenever a peer socket closes
+    // mid-write; quick commands tolerate EPIPE in `outln!` instead.
     let args = parse_args();
     let file = FileConfig::load()?;
     let eff = cli::Eff::resolve(&args, &file);

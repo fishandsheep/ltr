@@ -42,10 +42,11 @@ Start a relay on your server:
 ltr server --secret change-me
 ```
 
-Expose a local port without the console:
+Expose a local port without the console (a bare port means 127.0.0.1):
 
 ```sh
-ltr local 8000 --to your-server.example --secret change-me
+ltr 8000 -t your-server.example --secret change-me
+ltr 192.168.1.5:8000 -t your-server.example -p 9000   # explicit local address and remote port
 ```
 
 ## Encrypted by default, TOFU trust
@@ -63,27 +64,26 @@ Explicit trust is still available:
 
 ```sh
 # Client validates the server certificate via a CA
-ltr local 8000 --to your-server.example --tls-ca ./ca.pem
+ltr 8000 -t your-server.example --tls-ca ./ca.pem
 
 # Or pin a fingerprint
-ltr local 8000 --to your-server.example --tls-fingerprint <sha256>
+ltr 8000 -t your-server.example --tls-fingerprint <sha256>
 
 # Server with existing certs / required client certs (mTLS)
 ltr server --tls-cert ./cert.pem --tls-key ./key.pem --tls-client-ca ./ca.pem
 
 # Explicitly disable encryption (e.g. trusted internal networks)
 ltr server --no-tls
-ltr local 8000 --to your-server.example --no-tls
+ltr 8000 -t your-server.example --no-tls
 ```
 
-## Remote console and SSH bundle
+## Remote console and SSH
+
+Expose each separately (running both replaces the old bundle mode):
 
 ```sh
-ltr bundle --to your-server.example --secret change-me
-# → HTTPS console + SSH tunnel (ssh user@your-server.example -p 2222)
-
-ltr bundle --to your-server.example --no-ssh
-# → HTTPS console only
+ltr web -t your-server.example    # HTTPS console, remote port 7836 by default
+ltr ssh -t your-server.example    # SSH tunnel (ssh user@your-server.example -p 2222), remote port 2222 by default
 ```
 
 Remote mode terminates HTTPS locally (auto-generated self-signed certificate and a
@@ -102,13 +102,29 @@ targets stay on loopback.
   `prefers-reduced-motion`.
 - Zero-build frontend (Preact + htm embedded as ES modules in the binary).
 
-## Environment variables
+## Configuration and instance management
 
-Canonical variables use `LTR_*`: `LTR_SECRET`, `LTR_SERVER`, `LTR_LOCAL_PORT`,
-`LTR_WEB_TOKEN`, `LTR_MIN_PORT`, `LTR_MAX_PORT`, `LTR_TLS_CA`,
-`LTR_TLS_FINGERPRINT`, `LTR_TLS_SERVER_NAME`, `LTR_TLS_CLIENT_CERT`,
-`LTR_TLS_CLIENT_KEY`, `LTR_NO_TLS`, `LTR_LOG_LEVEL`, `LTR_LOG_JSON`.
-Precedence is CLI > `LTR_*`.
+Save common defaults (such as `to`) so a bare `ltr 8000` just works:
+
+```sh
+ltr conf set to your-server.example
+ltr conf get          # every setting, its value, and its source
+ltr 8000              # uses the configured relay
+```
+
+The config file is `~/.config/ltr/config.toml` (0600). Precedence: **CLI > config file
+> `LTR_*` environment variables > defaults**. Variables like `LTR_SECRET`,
+`LTR_SERVER`, `LTR_TLS_*`, `LTR_LOG_LEVEL`, `LTR_LOG_JSON`, and `LTR_WEB_*` keep
+working.
+
+List and stop running instances:
+
+```sh
+ltr -l          # list exposed ports
+ltr -s 9000     # stop by port
+ltr -s          # interactive picker
+ltr update      # self-update from GitHub Releases (npm/cargo installs get a hint instead)
+```
 
 Logs are human-readable by default; pass `--log-level debug` or `--log-json` for
 structured output. Secrets and tokens never appear in logs.

@@ -7,8 +7,7 @@
 
 use std::{
     collections::BTreeMap,
-    env, fmt,
-    fs,
+    env, fmt, fs,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
@@ -79,8 +78,9 @@ impl Kind {
                 Ok(value.to_string())
             }
             Self::Addr => {
-                raw.parse::<SocketAddr>()
-                    .with_context(|| format!("expected host:port like 127.0.0.1:7836, got {raw:?}"))?;
+                raw.parse::<SocketAddr>().with_context(|| {
+                    format!("expected host:port like 127.0.0.1:7836, got {raw:?}")
+                })?;
                 Ok(raw.to_string())
             }
             Self::Ip => {
@@ -111,34 +111,202 @@ pub struct KeySpec {
 
 /// Every configurable key, in display order.
 pub static KEYS: &[KeySpec] = &[
-    KeySpec { name: "to", kind: Kind::Str, env: Some("LTR_SERVER"), default: None, help: "Remote relay server for tunnels and web/ssh modes" },
-    KeySpec { name: "dport", kind: Kind::Port, env: None, default: None, help: "Remote port to request; each mode has its own default when unset" },
-    KeySpec { name: "secret", kind: Kind::Str, env: Some("LTR_SECRET"), default: None, help: "Authentication secret shared with the relay" },
-    KeySpec { name: "front", kind: Kind::Bool, env: Some("LTR_FRONT"), default: Some("false"), help: "Keep commands in the foreground instead of backgrounding" },
-    KeySpec { name: "ssh-local", kind: Kind::Str, env: None, default: Some("22"), help: "Local SSH endpoint forwarded by `ltr ssh` (port or host:port)" },
-    KeySpec { name: "log-level", kind: Kind::Str, env: Some("LTR_LOG_LEVEL"), default: Some("info"), help: "Log filter, for example info or ltr_cli=debug" },
-    KeySpec { name: "log-json", kind: Kind::Bool, env: Some("LTR_LOG_JSON"), default: Some("false"), help: "Emit structured JSON logs" },
-    KeySpec { name: "web-addr", kind: Kind::Addr, env: None, default: Some("127.0.0.1:7836"), help: "Local bind address of the web console" },
-    KeySpec { name: "web-token", kind: Kind::Str, env: Some("LTR_WEB_TOKEN"), default: None, help: "Bearer token for Web API requests" },
-    KeySpec { name: "web-cert", kind: Kind::Path, env: None, default: None, help: "PEM certificate for remote Web HTTPS" },
-    KeySpec { name: "web-key", kind: Kind::Path, env: None, default: None, help: "PEM private key for remote Web HTTPS" },
-    KeySpec { name: "web-max-tunnels", kind: Kind::Usize, env: Some("LTR_WEB_MAX_TUNNELS"), default: Some("64"), help: "Maximum tunnel definitions in the web console" },
-    KeySpec { name: "web-max-connections", kind: Kind::Usize, env: Some("LTR_WEB_MAX_CONNECTIONS"), default: Some("256"), help: "Maximum active connections per web-managed tunnel" },
-    KeySpec { name: "web-max-log-lines", kind: Kind::Usize, env: Some("LTR_WEB_MAX_LOG_LINES"), default: Some("500"), help: "Maximum retained log lines per web-managed tunnel" },
-    KeySpec { name: "max-connections", kind: Kind::Usize, env: None, default: Some("256"), help: "Maximum concurrent data connections for CLI tunnels" },
-    KeySpec { name: "no-tls", kind: Kind::Bool, env: Some("LTR_NO_TLS"), default: Some("false"), help: "Disable TLS (client tunnels and server)" },
-    KeySpec { name: "tls-ca", kind: Kind::Path, env: Some("LTR_TLS_CA"), default: None, help: "CA PEM validating the remote TLS certificate" },
-    KeySpec { name: "tls-fingerprint", kind: Kind::Str, env: Some("LTR_TLS_FINGERPRINT"), default: None, help: "SHA-256 fingerprint of the remote TLS certificate" },
-    KeySpec { name: "tls-server-name", kind: Kind::Str, env: Some("LTR_TLS_SERVER_NAME"), default: None, help: "TLS server name; defaults to --to" },
-    KeySpec { name: "tls-client-cert", kind: Kind::Path, env: Some("LTR_TLS_CLIENT_CERT"), default: None, help: "Client certificate PEM for mutual tunnel TLS" },
-    KeySpec { name: "tls-client-key", kind: Kind::Path, env: Some("LTR_TLS_CLIENT_KEY"), default: None, help: "Client private key PEM for mutual tunnel TLS" },
-    KeySpec { name: "min-port", kind: Kind::Port, env: Some("LTR_MIN_PORT"), default: Some("1024"), help: "Server: minimum accepted tunnel port" },
-    KeySpec { name: "max-port", kind: Kind::Port, env: Some("LTR_MAX_PORT"), default: Some("65535"), help: "Server: maximum accepted tunnel port" },
-    KeySpec { name: "bind-addr", kind: Kind::Ip, env: None, default: Some("0.0.0.0"), help: "Server: control bind address" },
-    KeySpec { name: "bind-tunnels", kind: Kind::Ip, env: None, default: None, help: "Server: tunnel listener address; defaults to bind-addr" },
-    KeySpec { name: "tls-cert", kind: Kind::Path, env: Some("LTR_TLS_CERT"), default: None, help: "Server: PEM certificate overriding the generated one" },
-    KeySpec { name: "tls-key", kind: Kind::Path, env: Some("LTR_TLS_KEY"), default: None, help: "Server: PEM private key for tunnel TLS" },
-    KeySpec { name: "tls-client-ca", kind: Kind::Path, env: Some("LTR_TLS_CLIENT_CA"), default: None, help: "Server: CA PEM requiring client certificates" },
+    KeySpec {
+        name: "to",
+        kind: Kind::Str,
+        env: Some("LTR_SERVER"),
+        default: None,
+        help: "Remote relay server for tunnels and web/ssh modes",
+    },
+    KeySpec {
+        name: "dport",
+        kind: Kind::Port,
+        env: None,
+        default: None,
+        help: "Remote port to request; each mode has its own default when unset",
+    },
+    KeySpec {
+        name: "secret",
+        kind: Kind::Str,
+        env: Some("LTR_SECRET"),
+        default: None,
+        help: "Authentication secret shared with the relay",
+    },
+    KeySpec {
+        name: "front",
+        kind: Kind::Bool,
+        env: Some("LTR_FRONT"),
+        default: Some("false"),
+        help: "Keep commands in the foreground instead of backgrounding",
+    },
+    KeySpec {
+        name: "ssh-local",
+        kind: Kind::Str,
+        env: None,
+        default: Some("22"),
+        help: "Local SSH endpoint forwarded by `ltr ssh` (port or host:port)",
+    },
+    KeySpec {
+        name: "log-level",
+        kind: Kind::Str,
+        env: Some("LTR_LOG_LEVEL"),
+        default: Some("info"),
+        help: "Log filter, for example info or ltr_cli=debug",
+    },
+    KeySpec {
+        name: "log-json",
+        kind: Kind::Bool,
+        env: Some("LTR_LOG_JSON"),
+        default: Some("false"),
+        help: "Emit structured JSON logs",
+    },
+    KeySpec {
+        name: "web-addr",
+        kind: Kind::Addr,
+        env: None,
+        default: Some("127.0.0.1:7836"),
+        help: "Local bind address of the web console",
+    },
+    KeySpec {
+        name: "web-token",
+        kind: Kind::Str,
+        env: Some("LTR_WEB_TOKEN"),
+        default: None,
+        help: "Bearer token for Web API requests",
+    },
+    KeySpec {
+        name: "web-cert",
+        kind: Kind::Path,
+        env: None,
+        default: None,
+        help: "PEM certificate for remote Web HTTPS",
+    },
+    KeySpec {
+        name: "web-key",
+        kind: Kind::Path,
+        env: None,
+        default: None,
+        help: "PEM private key for remote Web HTTPS",
+    },
+    KeySpec {
+        name: "web-max-tunnels",
+        kind: Kind::Usize,
+        env: Some("LTR_WEB_MAX_TUNNELS"),
+        default: Some("64"),
+        help: "Maximum tunnel definitions in the web console",
+    },
+    KeySpec {
+        name: "web-max-connections",
+        kind: Kind::Usize,
+        env: Some("LTR_WEB_MAX_CONNECTIONS"),
+        default: Some("256"),
+        help: "Maximum active connections per web-managed tunnel",
+    },
+    KeySpec {
+        name: "web-max-log-lines",
+        kind: Kind::Usize,
+        env: Some("LTR_WEB_MAX_LOG_LINES"),
+        default: Some("500"),
+        help: "Maximum retained log lines per web-managed tunnel",
+    },
+    KeySpec {
+        name: "max-connections",
+        kind: Kind::Usize,
+        env: None,
+        default: Some("256"),
+        help: "Maximum concurrent data connections for CLI tunnels",
+    },
+    KeySpec {
+        name: "no-tls",
+        kind: Kind::Bool,
+        env: Some("LTR_NO_TLS"),
+        default: Some("false"),
+        help: "Disable TLS (client tunnels and server)",
+    },
+    KeySpec {
+        name: "tls-ca",
+        kind: Kind::Path,
+        env: Some("LTR_TLS_CA"),
+        default: None,
+        help: "CA PEM validating the remote TLS certificate",
+    },
+    KeySpec {
+        name: "tls-fingerprint",
+        kind: Kind::Str,
+        env: Some("LTR_TLS_FINGERPRINT"),
+        default: None,
+        help: "SHA-256 fingerprint of the remote TLS certificate",
+    },
+    KeySpec {
+        name: "tls-server-name",
+        kind: Kind::Str,
+        env: Some("LTR_TLS_SERVER_NAME"),
+        default: None,
+        help: "TLS server name; defaults to --to",
+    },
+    KeySpec {
+        name: "tls-client-cert",
+        kind: Kind::Path,
+        env: Some("LTR_TLS_CLIENT_CERT"),
+        default: None,
+        help: "Client certificate PEM for mutual tunnel TLS",
+    },
+    KeySpec {
+        name: "tls-client-key",
+        kind: Kind::Path,
+        env: Some("LTR_TLS_CLIENT_KEY"),
+        default: None,
+        help: "Client private key PEM for mutual tunnel TLS",
+    },
+    KeySpec {
+        name: "min-port",
+        kind: Kind::Port,
+        env: Some("LTR_MIN_PORT"),
+        default: Some("1024"),
+        help: "Server: minimum accepted tunnel port",
+    },
+    KeySpec {
+        name: "max-port",
+        kind: Kind::Port,
+        env: Some("LTR_MAX_PORT"),
+        default: Some("65535"),
+        help: "Server: maximum accepted tunnel port",
+    },
+    KeySpec {
+        name: "bind-addr",
+        kind: Kind::Ip,
+        env: None,
+        default: Some("0.0.0.0"),
+        help: "Server: control bind address",
+    },
+    KeySpec {
+        name: "bind-tunnels",
+        kind: Kind::Ip,
+        env: None,
+        default: None,
+        help: "Server: tunnel listener address; defaults to bind-addr",
+    },
+    KeySpec {
+        name: "tls-cert",
+        kind: Kind::Path,
+        env: Some("LTR_TLS_CERT"),
+        default: None,
+        help: "Server: PEM certificate overriding the generated one",
+    },
+    KeySpec {
+        name: "tls-key",
+        kind: Kind::Path,
+        env: Some("LTR_TLS_KEY"),
+        default: None,
+        help: "Server: PEM private key for tunnel TLS",
+    },
+    KeySpec {
+        name: "tls-client-ca",
+        kind: Kind::Path,
+        env: Some("LTR_TLS_CLIENT_CA"),
+        default: None,
+        help: "Server: CA PEM requiring client certificates",
+    },
 ];
 
 /// Looks up a key specification by name.
@@ -170,9 +338,8 @@ impl FileConfig {
             Ok(raw) => raw,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("could not read config file {}", path.display())
-                })
+                return Err(err)
+                    .with_context(|| format!("could not read config file {}", path.display()))
             }
         };
         let parsed: BTreeMap<String, toml::Value> =
@@ -182,9 +349,8 @@ impl FileConfig {
             let Some(spec) = key_spec(&key) else {
                 bail!("unknown config key {key:?}; run `ltr conf get` to list valid keys");
             };
-            let value = stringify_toml(&value).with_context(|| {
-                format!("config key {key:?} must be a plain value")
-            })?;
+            let value = stringify_toml(&value)
+                .with_context(|| format!("config key {key:?} must be a plain value"))?;
             let value = spec
                 .kind
                 .parse(&value)
@@ -234,8 +400,7 @@ impl FileConfig {
             std::fs::write(&tmp, raw.as_bytes())
                 .with_context(|| format!("could not create {}", tmp.display()))?;
         }
-        fs::rename(&tmp, path)
-            .with_context(|| format!("could not replace {}", path.display()))?;
+        fs::rename(&tmp, path).with_context(|| format!("could not replace {}", path.display()))?;
         Ok(())
     }
 
@@ -248,9 +413,7 @@ impl FileConfig {
     /// persist it.
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         let spec = key_spec(key).ok_or_else(|| {
-            anyhow::anyhow!(
-                "unknown config key {key:?}; run `ltr conf get` to list valid keys"
-            )
+            anyhow::anyhow!("unknown config key {key:?}; run `ltr conf get` to list valid keys")
         })?;
         let value = spec
             .kind
@@ -264,9 +427,7 @@ impl FileConfig {
     /// persist the change.
     pub fn unset(&mut self, key: &str) -> Result<()> {
         key_spec(key).ok_or_else(|| {
-            anyhow::anyhow!(
-                "unknown config key {key:?}; run `ltr conf get` to list valid keys"
-            )
+            anyhow::anyhow!("unknown config key {key:?}; run `ltr conf get` to list valid keys")
         })?;
         self.entries.remove(key);
         Ok(())
@@ -311,7 +472,7 @@ pub fn resolve_below_cli(key: &str, file: &FileConfig) -> Option<ResolvedValue> 
             source: Source::File,
         });
     }
-    if let Some(raw) = spec.env.and_then(|env| env::var_os(env)) {
+    if let Some(raw) = spec.env.and_then(env::var_os) {
         let raw = raw.to_string_lossy().into_owned();
         let value = spec.kind.parse(&raw).unwrap_or(raw);
         return Some(ResolvedValue {
@@ -360,11 +521,7 @@ pub fn layered_usize(key: &str, cli: Option<usize>, file: &FileConfig) -> Option
 }
 
 /// Resolves a socket address setting across all layers.
-pub fn layered_addr(
-    key: &str,
-    cli: Option<SocketAddr>,
-    file: &FileConfig,
-) -> Option<SocketAddr> {
+pub fn layered_addr(key: &str, cli: Option<SocketAddr>, file: &FileConfig) -> Option<SocketAddr> {
     layered(key, cli.map(|v| v.to_string()), file).and_then(|v| v.parse().ok())
 }
 
@@ -387,7 +544,7 @@ pub(crate) static TEST_ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new((
 mod tests {
     use std::{fs, path::PathBuf, time::SystemTime};
 
-    use super::{FileConfig, Kind, Source, TEST_ENV_GUARD, resolve_below_cli};
+    use super::{resolve_below_cli, FileConfig, Kind, Source, TEST_ENV_GUARD};
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

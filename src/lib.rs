@@ -20,7 +20,9 @@
 pub mod cli;
 pub mod conf;
 pub mod daemon;
+pub mod instances;
 pub mod shared;
+pub mod update;
 /// Local web console for managing client tunnels.
 pub mod web;
 

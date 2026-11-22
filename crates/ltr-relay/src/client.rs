@@ -678,7 +678,9 @@ async fn connect_control(
         Some(ServerMessage::Hello(remote_port)) => remote_port,
         Some(ServerMessage::Error(message)) => bail!("server error: {message}"),
         Some(ServerMessage::Challenge(_)) => {
-            bail!("server requires authentication, but no client secret was provided");
+            bail!(
+                "the relay at {to}:{CONTROL_PORT} requires authentication, but no client secret was provided"
+            );
         }
         Some(_) => bail!("unexpected initial non-hello message"),
         None => bail!("unexpected EOF"),

@@ -42,10 +42,11 @@ ltr
 ltr server --secret change-me
 ```
 
-不开控制台、直接命令行暴露本地端口：
+不开控制台、直接命令行暴露本地端口（裸端口即 127.0.0.1）：
 
 ```sh
-ltr local 8000 --to your-server.example --secret change-me
+ltr 8000 -t your-server.example --secret change-me
+ltr 192.168.1.5:8000 -t your-server.example -p 9000   # 指定本地地址与远程端口
 ```
 
 ## 默认加密与 TOFU 信任
@@ -62,27 +63,26 @@ ltr local 8000 --to your-server.example --secret change-me
 
 ```sh
 # 客户端用 CA 验证服务端证书
-ltr local 8000 --to your-server.example --tls-ca ./ca.pem
+ltr 8000 -t your-server.example --tls-ca ./ca.pem
 
 # 或直接钉住指纹
-ltr local 8000 --to your-server.example --tls-fingerprint <sha256>
+ltr 8000 -t your-server.example --tls-fingerprint <sha256>
 
 # 服务端使用已有证书 / 要求客户端证书（mTLS）
 ltr server --tls-cert ./cert.pem --tls-key ./key.pem --tls-client-ca ./ca.pem
 
 # 明确关闭加密（例如纯内网）
 ltr server --no-tls
-ltr local 8000 --to your-server.example --no-tls
+ltr 8000 -t your-server.example --no-tls
 ```
 
-## 远程控制台与 SSH 组合模式
+## 远程控制台与 SSH
+
+分别暴露（同时运行两条命令即原来的组合模式）：
 
 ```sh
-ltr bundle --to your-server.example --secret change-me
-# → HTTPS 控制台 + SSH 隧道（ssh user@your-server.example -p 2222）
-
-ltr bundle --to your-server.example --no-ssh
-# → 仅 HTTPS 控制台
+ltr web -t your-server.example    # HTTPS 控制台，远程默认 7836
+ltr ssh -t your-server.example    # SSH 隧道（ssh user@your-server.example -p 2222），远程默认 2222
 ```
 
 远程模式会在本地终止 HTTPS（自动生成自签名证书与独立 Bearer Token，只打印文件
@@ -98,13 +98,28 @@ ltr bundle --to your-server.example --no-ssh
 - **尊重系统设置**：`prefers-reduced-motion` 时动画降级为静态方向箭头。
 - 前端零构建（Preact + htm 以 ES Module 内嵌于二进制），单文件分发。
 
-## 环境变量
+## 配置与实例管理
 
-规范环境变量使用 `LTR_*`：`LTR_SECRET`、`LTR_SERVER`、`LTR_LOCAL_PORT`、
-`LTR_WEB_TOKEN`、`LTR_MIN_PORT`、`LTR_MAX_PORT`、`LTR_TLS_CA`、
-`LTR_TLS_FINGERPRINT`、`LTR_TLS_SERVER_NAME`、`LTR_TLS_CLIENT_CERT`、
-`LTR_TLS_CLIENT_KEY`、`LTR_NO_TLS`、`LTR_LOG_LEVEL`、`LTR_LOG_JSON`。
-优先级为命令行 > `LTR_*`。
+常用默认值（如 `to`）可以保存到配置文件，之后 `ltr 8000` 即可直达：
+
+```sh
+ltr conf set to your-server.example
+ltr conf get          # 查看全部参数、当前值与来源
+ltr 8000              # 使用配置的 relay
+```
+
+配置文件为 `~/.config/ltr/config.toml`（0600）。参数优先级：**命令行 > 配置文件 >
+`LTR_*` 环境变量 > 默认值**。`LTR_SECRET`、`LTR_SERVER`、`LTR_TLS_*`、
+`LTR_LOG_LEVEL`、`LTR_LOG_JSON`、`LTR_WEB_*` 等环境变量仍然有效。
+
+列出并停止正在运行的实例：
+
+```sh
+ltr -l          # 列出已暴露的端口
+ltr -s 9000     # 按端口停止
+ltr -s          # 交互式选择停止
+ltr update      # 从 GitHub Releases 自更新（npm/cargo 安装会提示走原渠道）
+```
 
 诊断默认人类可读；`--log-level debug` 或 `--log-json` 输出结构化日志。日志不含
 Secret 与 Token。

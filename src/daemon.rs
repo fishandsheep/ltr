@@ -68,6 +68,7 @@ pub fn command_log_name(args: &Args) -> &'static str {
         (Some(Command::Ssh(_)), _) => "ssh",
         // Quick commands never daemonize; the name only labels their log file.
         (Some(Command::Conf(_)), _) => "conf",
+        (Some(Command::Update), _) => "update",
         (None, true) => "local",
         (None, false) => "web",
     }

@@ -13,6 +13,10 @@ use axum::{
 };
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 pub use ltr_relay::OnReady;
+
+/// Callback fired with the bound console address once a web mode finishes
+/// startup.
+pub type OnReadyAddr = Box<dyn FnOnce(SocketAddr) + Send>;
 use serde_json::json;
 use tokio::{net::TcpListener, sync::oneshot};
 
@@ -148,19 +152,19 @@ where
 }
 
 /// Like [`serve_with_state`], with a callback fired once the console listener
-/// is bound.
+/// is bound, receiving the bound address.
 pub async fn serve_with_state_on_ready<S>(
     config: ServeConfig,
     state: WebState,
     shutdown: S,
-    on_ready: Option<OnReady>,
+    on_ready: Option<OnReadyAddr>,
 ) -> Result<()>
 where
     S: Future<Output = std::result::Result<(), std::io::Error>> + Send + 'static,
 {
     let bound = bind_web_listener(config.addr, state.web_tls()).await?;
     if let Some(on_ready) = on_ready {
-        on_ready();
+        on_ready(bound.addr());
     }
     serve_bound(bound, state, async move {
         let _ = shutdown.await;
@@ -274,7 +278,7 @@ pub async fn run_managed_on_ready<S>(
     state: WebState,
     system_tunnels: Vec<SystemTunnelSpec>,
     shutdown: S,
-    on_ready: Option<OnReady>,
+    on_ready: Option<OnReadyAddr>,
 ) -> Result<()>
 where
     S: Future<Output = ()> + Send + 'static,
@@ -287,7 +291,7 @@ where
             spec.config.local_port = web_port;
         }
         let id = state
-            .create_system_tunnel(spec)
+            .ensure_system_tunnel(spec)
             .await
             .map_err(|err| anyhow!(err.message))?;
         state
@@ -321,7 +325,7 @@ where
         tokio::spawn(async move { monitor_state.monitor_locked_tunnels(&monitor_ids).await });
 
     if let Some(on_ready) = on_ready {
-        on_ready();
+        on_ready(SocketAddr::new(config.addr.ip(), web_port));
     }
 
     tokio::pin!(shutdown);

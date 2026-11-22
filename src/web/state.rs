@@ -188,6 +188,49 @@ impl WebState {
             .await
     }
 
+    /// Ensures a system tunnel definition exists. A stopped tunnel with the
+    /// same identity (for example one created earlier through the console) is
+    /// adopted instead of failing the identity conflict; a running one is a
+    /// hard error because another instance already owns it.
+    pub async fn ensure_system_tunnel(&self, spec: SystemTunnelSpec) -> Result<String, StateError> {
+        let session = self.session().await;
+        let config = normalize_config(spec.config.clone(), session.loopback_only)?;
+        let config_key = config.identity_key();
+
+        let existing_id = {
+            let tunnels = self.tunnels.read().await;
+            tunnels.identities.get(&config_key).cloned()
+        };
+        if let Some(existing_id) = existing_id {
+            let Ok(entry) = self.entry(&existing_id).await else {
+                return self.create_system_tunnel(spec).await;
+            };
+            let mut runtime = entry.lock().await;
+            if matches!(
+                runtime.status,
+                TunnelStatus::Starting | TunnelStatus::Running
+            ) {
+                return Err(conflict(
+                    "an identical tunnel is already running in another instance; stop it first with `ltr -s`",
+                ));
+            }
+            // Take over the runtime metadata (kind, role, lock, display URL);
+            // none of it is persisted, so the user's tunnel definition on disk
+            // stays untouched after this process exits.
+            runtime.kind = super::session::TunnelKind::System;
+            runtime.role = spec.role.into();
+            runtime.locked = true;
+            if spec.display_url.is_some() {
+                runtime.display_url = spec.display_url.clone();
+            }
+            runtime.touch();
+            runtime.push_log("adopted by a system tunnel".to_string());
+            return Ok(existing_id);
+        }
+
+        self.create_system_tunnel(spec).await
+    }
+
     pub async fn update_tunnel(&self, id: &str, config: TunnelConfig) -> Result<(), StateError> {
         let session = self.session().await;
         let config = normalize_config(config, session.loopback_only)?;

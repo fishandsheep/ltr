@@ -617,3 +617,83 @@ async fn managed_home_starts_two_locked_system_tunnels() -> Result<()> {
     task.await??;
     Ok(())
 }
+
+#[tokio::test]
+async fn managed_web_adopts_identical_user_tunnel() -> Result<()> {
+    let _guard = SERIAL_GUARD.lock().await;
+    let _server = spawn_server(None).await?;
+    let web_port = free_port().await?;
+    let console_port = free_port().await?;
+    let state = WebState::new(remote_session(SessionMode::RemoteWeb));
+
+    // A user tunnel with the same identity as the system web-console tunnel
+    // (same local console port, target, and remote port), persisted earlier
+    // through the console — the "identical tunnel exists" rerun scenario.
+    let user_id = state
+        .create_tunnel(TunnelConfig {
+            name: "my console".to_string(),
+            local_port: console_port,
+            to: "localhost".to_string(),
+            port: Some(web_port),
+            local_host: "127.0.0.1".to_string(),
+            secret: None,
+        })
+        .await
+        .expect("user tunnel should be created");
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let managed_state = state.clone();
+    let task = tokio::spawn(run_managed(
+        ServeConfig {
+            addr: format!("127.0.0.1:{console_port}").parse().unwrap(),
+            session: state.session().await,
+        },
+        state,
+        vec![SystemTunnelSpec {
+            role: SystemTunnelRole::WebConsole,
+            config: TunnelConfig {
+                name: "Web Console".to_string(),
+                local_port: console_port,
+                to: "localhost".to_string(),
+                port: Some(web_port),
+                local_host: "127.0.0.1".to_string(),
+                secret: None,
+            },
+            display_url: Some(format!("https://localhost:{web_port}")),
+        }],
+        async move {
+            let _ = shutdown_rx.await;
+        },
+    ));
+
+    // The system tunnel adopts the existing identity instead of failing.
+    // Poll with real yields so the managed task gets scheduled (a bare
+    // wait_for_running would fail before the task ever runs).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let info = managed_state.get_tunnel(&user_id).await?;
+        match (info.status, std::time::Instant::now() < deadline) {
+            (ltr_cli::web::TunnelStatus::Running, _) => break,
+            (ltr_cli::web::TunnelStatus::Failed, _) => {
+                panic!("adopted tunnel failed: {:?}", info.error)
+            }
+            (_, true) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            (_, false) => panic!("adopted tunnel never started: {info:?}"),
+        }
+    }
+    let listing = managed_state.list_tunnels().await;
+    assert_eq!(
+        listing.len(),
+        1,
+        "adoption must not create a second entry: {listing:?}"
+    );
+    assert_eq!(
+        listing[0].id, user_id,
+        "adopted tunnel should remain the same entry"
+    );
+    assert!(listing[0].locked, "adopted tunnel should be system-managed");
+
+    shutdown_tx.send(()).unwrap();
+    task.await??;
+    Ok(())
+}
