@@ -1,4 +1,4 @@
-//! Frozen Bore v1-compatible protocol and null-delimited JSON framing.
+//! Frozen LTR wire protocol and null-delimited JSON framing.
 
 use std::time::Duration;
 

@@ -127,31 +127,35 @@ impl Server {
                     _ => "failed to bind to port",
                 })
         };
-        if port > 0 {
-            // Client requests a specific port number.
-            if !self.port_range.contains(&port) {
-                return Err("client port number not in allowed range");
-            }
-            try_bind(port).await
-        } else {
-            // Client requests any available port in range.
-            //
-            // In this case, we bind to 150 random port numbers. We choose this value because in
-            // order to find a free port with probability at least 1-δ, when ε proportion of the
-            // ports are currently available, it suffices to check approximately -2 ln(δ) / ε
-            // independently and uniformly chosen ports (up to a second-order term in ε).
-            //
-            // Checking 150 times gives us 99.999% success at utilizing 85% of ports under these
-            // conditions, when ε=0.15 and δ=0.00001.
-            for _ in 0..150 {
-                let port = fastrand::u16(self.port_range.clone());
-                match try_bind(port).await {
-                    Ok(listener) => return Ok(listener),
-                    Err(_) => continue,
-                }
-            }
-            Err("failed to find an available port")
+        // Client requests a specific port number outside the allowed range.
+        if port > 0 && !self.port_range.contains(&port) {
+            return Err("client port number not in allowed range");
         }
+        // When a specific port turns out to be occupied, fall back to a random
+        // available port; the assigned port is reported back through the Hello
+        // message so the client can surface the change.
+        if port > 0 {
+            match try_bind(port).await {
+                Ok(listener) => return Ok(listener),
+                Err("port already in use") => {}
+                Err(err) => return Err(err),
+            }
+        }
+        // Bind to 150 random port numbers. We choose this value because in
+        // order to find a free port with probability at least 1-δ, when ε proportion
+        // of the ports are currently available, it suffices to check approximately -2 ln(δ) / ε
+        // independently and uniformly chosen ports (up to a second-order term in ε).
+        //
+        // Checking 150 times gives us 99.999% success at utilizing 85% of ports under these
+        // conditions, when ε=0.15 and δ=0.00001.
+        for _ in 0..150 {
+            let port = fastrand::u16(self.port_range.clone());
+            match try_bind(port).await {
+                Ok(listener) => return Ok(listener),
+                Err(_) => continue,
+            }
+        }
+        Err("failed to find an available port")
     }
 
     async fn handle_connection(&self, stream: BoxedStream) -> Result<()> {

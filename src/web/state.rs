@@ -612,7 +612,7 @@ mod tests {
         TunnelConfig {
             name: name.to_string(),
             local_port: 3000,
-            to: "bore.pub".to_string(),
+            to: "example.com".to_string(),
             port: Some(9000),
             local_host: "127.0.0.1".to_string(),
             secret: None,
@@ -659,7 +659,7 @@ mod tests {
             .create_system_tunnel(super::SystemTunnelSpec {
                 role: SystemTunnelRole::WebConsole,
                 config: config("Web Console"),
-                display_url: Some("https://bore.pub:7836".to_string()),
+                display_url: Some("https://example.com:7836".to_string()),
             })
             .await
             .expect("create should work");

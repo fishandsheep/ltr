@@ -1,6 +1,6 @@
 //! LTR (Local-to-Remote) is an async-Rust TCP tunnel that exposes local ports
 //! through a remote relay, with transport encryption on by default and an
-//! embedded Web console. Wire-compatible with Bore v1 clients and servers.
+//! embedded Web console. LTR relays serve LTR clients.
 //!
 //! This is the library crate documentation. If you're looking for usage
 //! information about the binary, see the command below.

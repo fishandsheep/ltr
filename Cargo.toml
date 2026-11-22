@@ -2,7 +2,7 @@
 name = "ltr-cli"
 version = "0.1.0"
 license = "MIT"
-description = "Async-Rust TCP tunnel exposing local ports through a remote relay: encrypted by default, Web console included, Bore v1 protocol compatible."
+description = "Async-Rust TCP tunnel exposing local ports through a remote relay: encrypted by default, Web console included."
 repository = "https://github.com/fishandsheep/ltr"
 documentation = "https://docs.rs/ltr-cli"
 keywords = ["network", "cli", "tunnel", "tcp"]

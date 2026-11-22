@@ -386,3 +386,36 @@ async fn tunnel_stats_report_bytes_and_connections() -> Result<()> {
     assert_eq!(stats.active_connections, 0, "connection guard releases");
     Ok(())
 }
+
+#[tokio::test]
+async fn requested_occupied_port_falls_back_to_free_port() -> Result<()> {
+    let _guard = SERIAL_GUARD.lock().await;
+    let _server = spawn_server(None).await?;
+    let (listener, first_addr) = spawn_client(None).await?;
+    tokio::spawn(run_echo_service(listener, 2));
+
+    // Request the port already held by the first tunnel; the relay should
+    // reassign a free one instead of rejecting the client.
+    let second_listener = TcpListener::bind("localhost:0").await?;
+    let second_client = Client::new(
+        "localhost",
+        second_listener.local_addr()?.port(),
+        "localhost",
+        first_addr.port(),
+        None,
+    )
+    .await
+    .expect("client should connect despite the occupied port");
+    assert_ne!(
+        second_client.remote_port(),
+        first_addr.port(),
+        "occupied port must not be handed out twice"
+    );
+    let second_addr: SocketAddr = ([127, 0, 0, 1], second_client.remote_port()).into();
+    tokio::spawn(run_echo_service(second_listener, 1));
+    tokio::spawn(second_client.listen());
+
+    wait_for_roundtrip(first_addr, b"first").await?;
+    wait_for_roundtrip(second_addr, b"second").await?;
+    Ok(())
+}

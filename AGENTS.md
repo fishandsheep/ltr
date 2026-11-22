@@ -4,10 +4,10 @@
 
 ## Structure
 
-LTR is a Rust 2021 TCP tunnel and Web control plane, independently forked and
-rewritten from ekzhang/bore.
+LTR is a Rust 2021 TCP tunnel and Web control plane, independently forked from
+ekzhang/bore and now fully diverged.
 
-- crates/ltr-protocol: frozen Bore v1 JSON framing and protocol messages.
+- crates/ltr-protocol: frozen null-delimited JSON framing and protocol messages.
 - crates/ltr-relay: authentication, plaintext/TLS transport with auto-negotiation,
   client, server, and relay lifecycle (including per-tunnel traffic counters).
 - src/: ltr-cli command parsing, orchestration, and the embedded Web control plane.
@@ -19,8 +19,7 @@ rewritten from ekzhang/bore.
 - tests/: protocol, authentication, transport/TLS, Web API, and end-to-end
   behaviour tests.
 - npm/ltr*: canonical npm/Bun launcher and 5 platform packages.
-- ci/ and .github/workflows/: cross-compilation and release automation; the CI also
-  runs live protocol interop tests against upstream ekzhang/bore.
+- ci/ and .github/workflows/: cross-compilation and release automation.
 - PRODUCT.md and DESIGN.md: Web product and design references.
 
 User data on disk: `~/.config/ltr/tunnels.toml` (console tunnels, 0600, secrets
@@ -61,8 +60,8 @@ framing internals.
 
 Canonical CLI/environment names use ltr and LTR_*. The Bore compatibility layer
 (bore binary, BORE_* variables, bore npm packages, the home alias) was removed in
-0.1.0; only the Bore v1 wire protocol stays compatible, guarded by CI interop
-tests. Do not reintroduce compatibility wrappers.
+0.1.0, and Bore protocol interop is no longer promised: LTR relays only guarantee
+LTR clients. Do not reintroduce compatibility wrappers.
 
 ## Security invariants
 

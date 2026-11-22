@@ -7,7 +7,7 @@ async fn main() -> Result<()> {
     let args = parse_args();
     if !args.front && !daemon::is_child() {
         #[cfg(unix)]
-        daemon::spawn_and_wait(&args.command).await;
+        daemon::spawn_and_wait(&args).await;
         #[cfg(not(unix))]
         eprintln!("Note: background execution is not supported on Windows yet; continuing in the foreground.");
     }

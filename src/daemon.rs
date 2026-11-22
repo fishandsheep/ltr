@@ -28,7 +28,7 @@ use std::{
 use anyhow::{Context, Result};
 use tracing_subscriber::fmt::MakeWriter;
 
-use crate::cli::Command;
+use crate::cli::{Args, Command};
 
 /// Environment variable marking the re-executed background child process.
 pub(crate) const CHILD_ENV: &str = "LTR_DAEMON_CHILD";
@@ -60,13 +60,14 @@ pub fn child_log_path() -> Result<PathBuf> {
         .with_context(|| format!("background child is missing {LOG_ENV}"))
 }
 
-/// Maps a parsed command to its background log file name.
-pub fn command_log_name(command: &Option<Command>) -> &'static str {
-    match command {
-        None => "web",
-        Some(Command::Local(_)) => "local",
-        Some(Command::Bundle(_)) => "bundle",
-        Some(Command::Server(_)) => "server",
+/// Maps a parsed invocation to its background log file name.
+pub fn command_log_name(args: &Args) -> &'static str {
+    match (&args.command, args.target.is_some()) {
+        (Some(Command::Server(_)), _) => "server",
+        (Some(Command::Web(_)), _) => "web",
+        (Some(Command::Ssh(_)), _) => "ssh",
+        (None, true) => "local",
+        (None, false) => "web",
     }
 }
 
@@ -196,8 +197,8 @@ enum ChildSignal {
 /// before reporting readiness its exit status is propagated. Interrupting the
 /// wait (Ctrl-C) kills the child.
 #[cfg(unix)]
-pub async fn spawn_and_wait(command: &Option<Command>) -> ! {
-    let name = command_log_name(command);
+pub async fn spawn_and_wait(args: &Args) -> ! {
+    let name = command_log_name(args);
     let log_path = match log_path(name).and_then(|path| LogFileWriter::open(&path).map(|_| path)) {
         Ok(path) => path,
         Err(err) => {
@@ -315,14 +316,15 @@ mod tests {
 
     #[test]
     fn command_log_name_covers_all_modes() {
-        assert_eq!(command_log_name(&None), "web");
         for (argv, expected) in [
-            (vec!["ltr", "local", "8000", "--to", "h"], "local"),
-            (vec!["ltr", "bundle", "--to", "h"], "bundle"),
+            (vec!["ltr"], "web"),
+            (vec!["ltr", "8000"], "local"),
+            (vec!["ltr", "web"], "web"),
+            (vec!["ltr", "ssh"], "ssh"),
             (vec!["ltr", "server"], "server"),
         ] {
             let args = Args::try_parse_from(argv).expect("parse should succeed");
-            assert_eq!(command_log_name(&args.command), expected);
+            assert_eq!(command_log_name(&args), expected);
         }
     }
 

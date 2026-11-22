@@ -7,7 +7,7 @@
 
 LTR（Local-to-Remote）是一个基于异步 Rust 的 TCP 隧道工具。它把本地 TCP 服务通过远程中继暴露出去，默认加密传输，并内置一个带网络拓扑与流量可视化的 Web 控制台。
 
-本项目从 [ekzhang/bore](https://github.com/ekzhang/bore) 独立 fork 并重写，保留 Bore v1 明文协议兼容（旧 Bore 客户端可直接连接 LTR 服务端），其余部分——命令面、传输安全、控制台、分发——都为简单易用重新设计。
+本项目最初从 [ekzhang/bore](https://github.com/ekzhang/bore) 独立 fork 并重写，现已完全独立演进：命令面、传输安全、控制台、分发都为简单易用重新设计，不再承诺与 Bore 客户端或服务端互操作（仅 relay 与客户端均为 ltr 时保证工作）。
 
 ## 安装
 
@@ -56,7 +56,7 @@ ltr local 8000 --to your-server.example --secret change-me
 - **客户端**默认走 TLS，首次连接记录服务器证书指纹（TOFU，类似 SSH 的
   `known_hosts`，存储在 `~/.config/ltr/known_hosts`）。之后指纹变化将硬失败并提示
   如何重置——没有跳过校验的选项。
-- 同一个控制端口同时接受 TLS 与明文连接：旧 Bore 客户端无需任何改动。
+- 同一个控制端口同时接受 TLS 与明文连接，按连接自动识别。
 
 显式信任方式仍然可用：
 
@@ -111,13 +111,10 @@ Secret 与 Token。
 
 ## 与 Bore 的关系
 
-- **协议兼容保留**：Bore v1 客户端可以连接 LTR 服务端，LTR 客户端也可以连接
-  Bore 服务端（后者会自动回退明文，无需 `--no-tls`）。
-- **兼容包装已移除**（0.1.0）：`bore` 二进制、`BORE_*` 环境变量、`bore home`
-  别名与 `@qinshower/bore*` npm 包不再发布。仍在使用旧包的用户请迁移到
-  `ltr`——命令一一对应：`bore local` → `ltr local`，`bore server` → `ltr server`。
-- 兼容性由 CI 中针对上游 [ekzhang/bore](https://github.com/ekzhang/bore) 的真实
-  互操作测试保障。
+LTR 最初 fork 自 [ekzhang/bore](https://github.com/ekzhang/bore)（见
+ACKNOWLEDGMENTS）。0.1.0 起陆续移除了 `bore` 二进制、`BORE_*` 环境变量与
+`@qinshower/bore*` npm 包；现在也不再保留 Bore v1 协议互操作承诺——LTR 服务端
+只保证与 LTR 客户端工作。仍在使用 Bore 的用户请将两端都迁移到 ltr。
 
 ## 开发
 

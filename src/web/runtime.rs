@@ -85,6 +85,17 @@ impl TunnelRuntime {
                 if let Some(remote_port) = remote_port {
                     self.push_log(format!("remote port assigned: {remote_port}"));
                 }
+                // The relay reassigns occupied ports; surface the change so the
+                // requested port is never silently missing.
+                if let (Some(requested), Some(actual)) = (self.config.port, remote_port) {
+                    if requested != 0 && actual != requested {
+                        let note = format!(
+                            "Remote port {requested} is already in use; using {actual} instead"
+                        );
+                        self.push_log(note.clone());
+                        println!("{note}");
+                    }
+                }
                 remote_port.and_then(|remote_port| {
                     (self.role != TunnelRole::User)
                         .then(|| (self.role, self.config.to.clone(), remote_port))

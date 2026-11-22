@@ -2,7 +2,7 @@ use ltr_cli::shared::{ClientMessage, Delimited};
 use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn bore_v1_wire_shape_remains_null_delimited_json() {
+async fn wire_shape_remains_null_delimited_json() {
     let (mut raw, framed_stream) = duplex(256);
     let mut framed = Delimited::new(framed_stream);
 
@@ -18,7 +18,7 @@ async fn bore_v1_wire_shape_remains_null_delimited_json() {
 }
 
 #[tokio::test]
-async fn bore_v1_outgoing_frame_is_stable() {
+async fn outgoing_frame_is_stable() {
     let (framed_stream, mut raw) = duplex(256);
     let mut framed = Delimited::new(framed_stream);
     framed

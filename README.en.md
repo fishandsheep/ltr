@@ -7,7 +7,7 @@
 
 LTR (Local-to-Remote) is an async-Rust TCP tunnel. It exposes local TCP services through a remote relay, encrypts transport by default, and ships with a Web console featuring a network topology and live traffic visualization.
 
-The project is an independent fork and rewrite of [ekzhang/bore](https://github.com/ekzhang/bore). The Bore v1 plaintext protocol stays compatible (old Bore clients connect to LTR servers unchanged); everything else — the command surface, transport security, console, and distribution — was redesigned for simplicity.
+The project started as an independent fork and rewrite of [ekzhang/bore](https://github.com/ekzhang/bore) and has since fully diverged: the command surface, transport security, console, and distribution are redesigned for simplicity, and interoperability with Bore clients or servers is no longer promised (LTR relays are only guaranteed to work with LTR clients).
 
 ## Install
 
@@ -57,7 +57,7 @@ Since 0.1.0 encryption needs no flags:
 - The **client** uses TLS by default and records the server certificate fingerprint on
   first use (TOFU, like SSH `known_hosts`, stored at `~/.config/ltr/known_hosts`).
   A changed fingerprint fails hard with reset instructions — there is no skip option.
-- One control port accepts both TLS and plaintext: legacy Bore clients keep working.
+- One control port accepts both TLS and plaintext, auto-detected per connection.
 
 Explicit trust is still available:
 
@@ -115,15 +115,11 @@ structured output. Secrets and tokens never appear in logs.
 
 ## Relationship to Bore
 
-- **Protocol compatibility stays**: Bore v1 clients connect to LTR servers, and LTR
-  clients connect to Bore servers (the latter falls back to plaintext automatically —
-  no `--no-tls` needed).
-- **Compatibility wrappers are gone** (0.1.0): the `bore` binary, `BORE_*` variables,
-  the `bore home` alias, and the `@qinshower/bore*` npm packages are no longer
-  published. Commands map one-to-one: `bore local` → `ltr local`, `bore server` →
-  `ltr server`.
-- Compatibility is guarded in CI by live interop tests against upstream
-  [ekzhang/bore](https://github.com/ekzhang/bore).
+LTR was originally forked from [ekzhang/bore](https://github.com/ekzhang/bore) (see
+ACKNOWLEDGMENTS). The `bore` binary, `BORE_*` variables, and `@qinshower/bore*` npm
+packages were removed in 0.1.0; the Bore v1 protocol interop promise is now gone too —
+LTR servers are only guaranteed to work with LTR clients. Bore users should migrate
+both ends to ltr.
 
 ## Development
 
