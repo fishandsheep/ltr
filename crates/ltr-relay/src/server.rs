@@ -12,9 +12,9 @@ use tracing::{info, info_span, warn, Instrument};
 use uuid::Uuid;
 
 use crate::auth::Authenticator;
-use crate::OnReady;
 use crate::shared::{configure_tcp_stream, ClientMessage, Delimited, ServerMessage, CONTROL_PORT};
 use crate::transport::{self, BoxedStream, ServerTlsConfig};
+use crate::OnReady;
 
 /// State structure for the server.
 pub struct Server {

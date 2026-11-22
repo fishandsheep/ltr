@@ -36,6 +36,11 @@ spec-driven behaviour.
 - cargo run -- server: run an LTR relay server (TLS on by default).
 - cargo run -- local 8000 --to localhost: expose a local service.
 - cargo run -- bundle --to server.example: run Web plus SSH system tunnels.
+
+Commands background themselves after printing the startup summary (pid,
+log directory under the data dir's `logs/`); pass `--front` (or set
+`LTR_FRONT=1`) to keep them attached to the terminal. Background mode is
+Unix-only; on Windows LTR falls back to the foreground with a notice.
 - cargo test --workspace --all-targets: run the complete Rust suite.
 - cargo fmt --all -- --check: verify formatting.
 - cargo clippy --workspace --all-targets --all-features -- -D warnings: run lints.

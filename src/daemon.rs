@@ -80,9 +80,8 @@ impl LogFileWriter {
     /// Opens (creating if needed) a log file in append mode.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("could not create log directory {}", parent.display())
-            })?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("could not create log directory {}", parent.display()))?;
         }
         let mut options = fs::OpenOptions::new();
         options.append(true).create(true).read(false);
@@ -253,7 +252,8 @@ pub async fn spawn_and_wait(command: &Option<Command>) -> ! {
     }
     drop(signal_tx);
 
-    let decision = tokio::task::spawn_blocking(move || matches!(signal_rx.recv(), Ok(ChildSignal::Ready)));
+    let decision =
+        tokio::task::spawn_blocking(move || matches!(signal_rx.recv(), Ok(ChildSignal::Ready)));
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {

@@ -289,13 +289,14 @@ pub fn validate_args(args: &Args) -> std::result::Result<(), clap::Error> {
 }
 
 /// Creates the ready hook that prints the background summary once a mode
-/// finishes startup, carrying optional extra summary lines.
-fn daemon_ready_hook(extra_lines: Vec<String>) -> Option<OnReady> {
+/// finishes startup, carrying optional extra summary lines. In foreground
+/// mode the hook fires too, but the summary is a no-op.
+fn daemon_ready_hook(extra_lines: Vec<String>) -> OnReady {
     let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
     daemon::spawn_finish(ready_rx);
-    Some(Box::new(move || {
+    Box::new(move || {
         let _ = ready_tx.send(extra_lines);
-    }))
+    })
 }
 
 /// Runs parsed CLI command.
@@ -314,7 +315,7 @@ pub async fn run(args: Args) -> Result<()> {
                     args.web.web_max_connections,
                     args.web.web_max_log_lines,
                 ),
-                daemon_ready_hook(Vec::new()),
+                Some(daemon_ready_hook(Vec::new())),
             )
             .await;
         }
@@ -348,7 +349,7 @@ pub async fn run(args: Args) -> Result<()> {
             .await?;
         }
         Some(Command::Bundle(bundle_args)) => {
-            run_bundle(bundle_args, daemon_ready_hook(Vec::new())).await?;
+            run_bundle(bundle_args, Some(daemon_ready_hook(Vec::new()))).await?;
         }
         Some(Command::Server(server_args)) => {
             let port_range = server_args.min_port..=server_args.max_port;

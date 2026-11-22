@@ -34,6 +34,8 @@ ltr
 
 Create, start, and stop tunnels in the browser, with a live topology per tunnel (local service → ltr client → relay → visitors) and request flow. Console tunnels persist in `~/.config/ltr/tunnels.toml` and survive restarts.
 
+Every command runs in the background by default: it prints its startup summary and log directory, then detaches from the terminal, appending logs under the data dir's `logs/`. Pass `--front` (or set `LTR_FRONT=1`) to stay in the foreground. Background mode is not available on Windows yet; LTR falls back to the foreground with a notice.
+
 Start a relay on your server:
 
 ```sh
