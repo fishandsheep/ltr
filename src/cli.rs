@@ -985,7 +985,9 @@ async fn run_stop(port: Option<u16>) -> Result<()> {
                 return Ok(());
             }
             print_instances(&records);
-            print!("Stop which instance? Enter a number (q to cancel): ");
+            print!(
+                "Stop which instance? Enter a number, a for all, or q to cancel: "
+            );
             use std::io::Write;
             std::io::stdout().flush().ok();
             let mut line = String::new();
@@ -997,13 +999,21 @@ async fn run_stop(port: Option<u16>) -> Result<()> {
                 outln!("Cancelled.");
                 return Ok(());
             }
+            if line.eq_ignore_ascii_case("a") {
+                for record in &records {
+                    stop_instance(record)?;
+                }
+                return Ok(());
+            }
+            let usage_hint =
+                format!("enter a number between 1 and {}, a for all, or q to cancel", records.len());
             let index: usize = line
                 .parse()
-                .with_context(|| format!("enter a number between 1 and {}", records.len()))?;
+                .with_context(|| usage_hint.clone())?;
             let index = index
                 .checked_sub(1)
                 .filter(|index| *index < records.len())
-                .with_context(|| format!("enter a number between 1 and {}", records.len()))?;
+                .with_context(|| usage_hint)?;
             vec![records[index].clone()]
         }
     };
