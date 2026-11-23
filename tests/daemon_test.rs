@@ -141,7 +141,7 @@ fn default_mode_backgrounds_after_summary() {
     assert!(log_path.ends_with("logs/web.log"));
 
     let stop = recv_line(&rx);
-    assert_eq!(stop, format!("Stop: kill {pid}"));
+    assert_eq!(stop, "Stop: ltr -s");
 
     // The marker never leaks to the terminal and the parent exits cleanly.
     assert!(rx.recv_timeout(Duration::from_secs(10)).is_err());

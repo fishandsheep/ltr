@@ -156,7 +156,7 @@ pub fn finish(extra_lines: &[String]) {
     if let Some(path) = env::var_os(LOG_ENV) {
         println!("LTR running in background (pid {pid})");
         println!("Logs: {}", PathBuf::from(path).display());
-        println!("Stop: kill {pid}");
+        println!("Stop: ltr -s");
     }
     println!("{READY_MARKER}");
     let _ = std::io::stdout().flush();
