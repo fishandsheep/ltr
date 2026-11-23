@@ -14,8 +14,6 @@ const cargoVersion = versionMatch[1];
 const packageNames = [
   "ltr",
   "ltr-darwin-arm64",
-  "ltr-darwin-x64",
-  "ltr-linux-arm64-musl",
   "ltr-linux-x64-musl",
   "ltr-win32-x64-msvc"
 ];

@@ -116,8 +116,7 @@ jobs:
     strategy:
       matrix:
         target:
-          # macOS
-          - x86_64-apple-darwin
+          # macOS (Apple Silicon)
           - aarch64-apple-darwin
     steps:
       - name: Setup | Checkout
@@ -162,7 +161,6 @@ jobs:
     strategy:
       matrix:
         target:
-          - aarch64-unknown-linux-musl
           - x86_64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
@@ -230,8 +228,6 @@ jobs:
             package-dir: ltr-linux-x64-musl
           - os: windows-latest
             package-dir: ltr-win32-x64-msvc
-          - os: macos-15-intel
-            package-dir: ltr-darwin-x64
           - os: macos-15
             package-dir: ltr-darwin-arm64
     steps:
@@ -283,8 +279,6 @@ jobs:
       matrix:
         package-dir:
           - ltr-darwin-arm64
-          - ltr-darwin-x64
-          - ltr-linux-arm64-musl
           - ltr-linux-x64-musl
           - ltr-win32-x64-msvc
     env:

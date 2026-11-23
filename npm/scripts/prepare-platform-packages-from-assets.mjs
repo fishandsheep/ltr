@@ -15,8 +15,6 @@ if (!tag) {
 
 const assets = [
   ["aarch64-apple-darwin", "ltr-darwin-arm64", "tar.gz", "ltr"],
-  ["x86_64-apple-darwin", "ltr-darwin-x64", "tar.gz", "ltr"],
-  ["aarch64-unknown-linux-musl", "ltr-linux-arm64-musl", "tar.gz", "ltr"],
   ["x86_64-unknown-linux-musl", "ltr-linux-x64-musl", "tar.gz", "ltr"],
   ["x86_64-pc-windows-msvc", "ltr-win32-x64-msvc", "zip", "ltr.exe"]
 ];

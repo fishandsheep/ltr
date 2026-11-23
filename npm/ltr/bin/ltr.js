@@ -6,8 +6,6 @@ const path = require("path");
 
 const packages = {
   "darwin arm64": "@qinshower/ltr-darwin-arm64",
-  "darwin x64": "@qinshower/ltr-darwin-x64",
-  "linux arm64": "@qinshower/ltr-linux-arm64-musl",
   "linux x64": "@qinshower/ltr-linux-x64-musl",
   "win32 x64": "@qinshower/ltr-win32-x64-msvc"
 };

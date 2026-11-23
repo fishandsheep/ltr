@@ -14,15 +14,11 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const ltrPackages = [
   "ltr-darwin-arm64",
-  "ltr-darwin-x64",
-  "ltr-linux-arm64-musl",
   "ltr-linux-x64-musl",
   "ltr-win32-x64-msvc"
 ];
 const cases = [
   ["darwin", "arm64", null, "ltr-darwin-arm64"],
-  ["darwin", "x64", null, "ltr-darwin-x64"],
-  ["linux", "arm64", [true, null], "ltr-linux-arm64-musl"],
   ["linux", "x64", [true, null], "ltr-linux-x64-musl"],
   ["win32", "x64", null, "ltr-win32-x64-msvc"]
 ];
@@ -96,4 +92,4 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true });
 }
 
-console.log("All 5 LTR platform launcher selections passed");
+console.log("All 3 LTR platform launcher selections passed");

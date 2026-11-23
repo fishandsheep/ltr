@@ -21,7 +21,7 @@ ekzhang/bore and now fully diverged.
   key-parity.
 - tests/: protocol, authentication, transport/TLS, Web API, and end-to-end
   behaviour tests.
-- npm/ltr*: canonical npm/Bun launcher and 5 platform packages.
+- npm/ltr*: canonical npm/Bun launcher and 3 platform packages.
 - ci/ and .github/workflows/: cross-compilation and release automation.
 - PRODUCT.md and DESIGN.md: Web product and design references.
 
