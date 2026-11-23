@@ -107,206 +107,256 @@ pub struct KeySpec {
     pub default: Option<&'static str>,
     /// One-line description shown by `conf get`.
     pub help: &'static str,
+    /// True when the value is a secret: `conf` output shows it masked, never
+    /// in clear text. The builder forces every new key to decide this.
+    pub masked: bool,
+}
+
+/// Placeholder shown instead of secret values; fixed width so it does not
+/// leak the real value's length.
+pub const MASKED_VALUE: &str = "********";
+
+impl KeySpec {
+    /// Builds an ordinary (non-secret) key specification.
+    const fn new(
+        name: &'static str,
+        kind: Kind,
+        env: Option<&'static str>,
+        default: Option<&'static str>,
+        help: &'static str,
+    ) -> Self {
+        Self {
+            name,
+            kind,
+            env,
+            default,
+            help,
+            masked: false,
+        }
+    }
+
+    /// Builds a key whose value is a secret and prints masked.
+    const fn secret(
+        name: &'static str,
+        kind: Kind,
+        env: Option<&'static str>,
+        default: Option<&'static str>,
+        help: &'static str,
+    ) -> Self {
+        Self {
+            masked: true,
+            ..Self::new(name, kind, env, default, help)
+        }
+    }
+}
+
+/// Renders a value for terminal display, masking secret keys.
+pub fn display_value<'a>(spec: &KeySpec, value: &'a str) -> &'a str {
+    if spec.masked {
+        MASKED_VALUE
+    } else {
+        value
+    }
 }
 
 /// Every configurable key, in display order.
 pub static KEYS: &[KeySpec] = &[
-    KeySpec {
-        name: "to",
-        kind: Kind::Str,
-        env: Some("LTR_SERVER"),
-        default: None,
-        help: "Remote relay server for tunnels and web/ssh modes",
-    },
-    KeySpec {
-        name: "dport",
-        kind: Kind::Port,
-        env: None,
-        default: None,
-        help: "Remote port to request; each mode has its own default when unset",
-    },
-    KeySpec {
-        name: "secret",
-        kind: Kind::Str,
-        env: Some("LTR_SECRET"),
-        default: None,
-        help: "Authentication secret shared with the relay",
-    },
-    KeySpec {
-        name: "front",
-        kind: Kind::Bool,
-        env: Some("LTR_FRONT"),
-        default: Some("false"),
-        help: "Keep commands in the foreground instead of backgrounding",
-    },
-    KeySpec {
-        name: "ssh-local",
-        kind: Kind::Str,
-        env: None,
-        default: Some("22"),
-        help: "Local SSH endpoint forwarded by `ltr ssh` (port or host:port)",
-    },
-    KeySpec {
-        name: "log-level",
-        kind: Kind::Str,
-        env: Some("LTR_LOG_LEVEL"),
-        default: Some("info"),
-        help: "Log filter, for example info or ltr_cli=debug",
-    },
-    KeySpec {
-        name: "log-json",
-        kind: Kind::Bool,
-        env: Some("LTR_LOG_JSON"),
-        default: Some("false"),
-        help: "Emit structured JSON logs",
-    },
-    KeySpec {
-        name: "web-addr",
-        kind: Kind::Addr,
-        env: None,
-        default: Some("127.0.0.1:7836"),
-        help: "Local bind address of the web console",
-    },
-    KeySpec {
-        name: "web-token",
-        kind: Kind::Str,
-        env: Some("LTR_WEB_TOKEN"),
-        default: None,
-        help: "Bearer token for Web API requests",
-    },
-    KeySpec {
-        name: "web-cert",
-        kind: Kind::Path,
-        env: None,
-        default: None,
-        help: "PEM certificate for remote Web HTTPS",
-    },
-    KeySpec {
-        name: "web-key",
-        kind: Kind::Path,
-        env: None,
-        default: None,
-        help: "PEM private key for remote Web HTTPS",
-    },
-    KeySpec {
-        name: "web-max-tunnels",
-        kind: Kind::Usize,
-        env: Some("LTR_WEB_MAX_TUNNELS"),
-        default: Some("64"),
-        help: "Maximum tunnel definitions in the web console",
-    },
-    KeySpec {
-        name: "web-max-connections",
-        kind: Kind::Usize,
-        env: Some("LTR_WEB_MAX_CONNECTIONS"),
-        default: Some("256"),
-        help: "Maximum active connections per web-managed tunnel",
-    },
-    KeySpec {
-        name: "web-max-log-lines",
-        kind: Kind::Usize,
-        env: Some("LTR_WEB_MAX_LOG_LINES"),
-        default: Some("500"),
-        help: "Maximum retained log lines per web-managed tunnel",
-    },
-    KeySpec {
-        name: "max-connections",
-        kind: Kind::Usize,
-        env: None,
-        default: Some("256"),
-        help: "Maximum concurrent data connections for CLI tunnels",
-    },
-    KeySpec {
-        name: "no-tls",
-        kind: Kind::Bool,
-        env: Some("LTR_NO_TLS"),
-        default: Some("false"),
-        help: "Disable TLS (client tunnels and server)",
-    },
-    KeySpec {
-        name: "tls-ca",
-        kind: Kind::Path,
-        env: Some("LTR_TLS_CA"),
-        default: None,
-        help: "CA PEM validating the remote TLS certificate",
-    },
-    KeySpec {
-        name: "tls-fingerprint",
-        kind: Kind::Str,
-        env: Some("LTR_TLS_FINGERPRINT"),
-        default: None,
-        help: "SHA-256 fingerprint of the remote TLS certificate",
-    },
-    KeySpec {
-        name: "tls-server-name",
-        kind: Kind::Str,
-        env: Some("LTR_TLS_SERVER_NAME"),
-        default: None,
-        help: "TLS server name; defaults to --to",
-    },
-    KeySpec {
-        name: "tls-client-cert",
-        kind: Kind::Path,
-        env: Some("LTR_TLS_CLIENT_CERT"),
-        default: None,
-        help: "Client certificate PEM for mutual tunnel TLS",
-    },
-    KeySpec {
-        name: "tls-client-key",
-        kind: Kind::Path,
-        env: Some("LTR_TLS_CLIENT_KEY"),
-        default: None,
-        help: "Client private key PEM for mutual tunnel TLS",
-    },
-    KeySpec {
-        name: "min-port",
-        kind: Kind::Port,
-        env: Some("LTR_MIN_PORT"),
-        default: Some("1024"),
-        help: "Server: minimum accepted tunnel port",
-    },
-    KeySpec {
-        name: "max-port",
-        kind: Kind::Port,
-        env: Some("LTR_MAX_PORT"),
-        default: Some("65535"),
-        help: "Server: maximum accepted tunnel port",
-    },
-    KeySpec {
-        name: "bind-addr",
-        kind: Kind::Ip,
-        env: None,
-        default: Some("0.0.0.0"),
-        help: "Server: control bind address",
-    },
-    KeySpec {
-        name: "bind-tunnels",
-        kind: Kind::Ip,
-        env: None,
-        default: None,
-        help: "Server: tunnel listener address; defaults to bind-addr",
-    },
-    KeySpec {
-        name: "tls-cert",
-        kind: Kind::Path,
-        env: Some("LTR_TLS_CERT"),
-        default: None,
-        help: "Server: PEM certificate overriding the generated one",
-    },
-    KeySpec {
-        name: "tls-key",
-        kind: Kind::Path,
-        env: Some("LTR_TLS_KEY"),
-        default: None,
-        help: "Server: PEM private key for tunnel TLS",
-    },
-    KeySpec {
-        name: "tls-client-ca",
-        kind: Kind::Path,
-        env: Some("LTR_TLS_CLIENT_CA"),
-        default: None,
-        help: "Server: CA PEM requiring client certificates",
-    },
+    KeySpec::new(
+        "to",
+        Kind::Str,
+        Some("LTR_SERVER"),
+        None,
+        "Remote relay server for tunnels and web/ssh modes",
+    ),
+    KeySpec::new(
+        "dport",
+        Kind::Port,
+        None,
+        None,
+        "Remote port to request; each mode has its own default when unset",
+    ),
+    KeySpec::secret(
+        "secret",
+        Kind::Str,
+        Some("LTR_SECRET"),
+        None,
+        "Authentication secret shared with the relay",
+    ),
+    KeySpec::new(
+        "front",
+        Kind::Bool,
+        Some("LTR_FRONT"),
+        Some("false"),
+        "Keep commands in the foreground instead of backgrounding",
+    ),
+    KeySpec::new(
+        "ssh-local",
+        Kind::Str,
+        None,
+        Some("22"),
+        "Local SSH endpoint forwarded by `ltr ssh` (port or host:port)",
+    ),
+    KeySpec::new(
+        "log-level",
+        Kind::Str,
+        Some("LTR_LOG_LEVEL"),
+        Some("info"),
+        "Log filter, for example info or ltr_cli=debug",
+    ),
+    KeySpec::new(
+        "log-json",
+        Kind::Bool,
+        Some("LTR_LOG_JSON"),
+        Some("false"),
+        "Emit structured JSON logs",
+    ),
+    KeySpec::new(
+        "web-addr",
+        Kind::Addr,
+        None,
+        Some("127.0.0.1:7836"),
+        "Local bind address of the web console",
+    ),
+    KeySpec::secret(
+        "web-token",
+        Kind::Str,
+        Some("LTR_WEB_TOKEN"),
+        None,
+        "Bearer token for Web API requests",
+    ),
+    KeySpec::new(
+        "web-cert",
+        Kind::Path,
+        None,
+        None,
+        "PEM certificate for remote Web HTTPS",
+    ),
+    KeySpec::new(
+        "web-key",
+        Kind::Path,
+        None,
+        None,
+        "PEM private key for remote Web HTTPS",
+    ),
+    KeySpec::new(
+        "web-max-tunnels",
+        Kind::Usize,
+        Some("LTR_WEB_MAX_TUNNELS"),
+        Some("64"),
+        "Maximum tunnel definitions in the web console",
+    ),
+    KeySpec::new(
+        "web-max-connections",
+        Kind::Usize,
+        Some("LTR_WEB_MAX_CONNECTIONS"),
+        Some("256"),
+        "Maximum active connections per web-managed tunnel",
+    ),
+    KeySpec::new(
+        "web-max-log-lines",
+        Kind::Usize,
+        Some("LTR_WEB_MAX_LOG_LINES"),
+        Some("500"),
+        "Maximum retained log lines per web-managed tunnel",
+    ),
+    KeySpec::new(
+        "max-connections",
+        Kind::Usize,
+        None,
+        Some("256"),
+        "Maximum concurrent data connections for CLI tunnels",
+    ),
+    KeySpec::new(
+        "no-tls",
+        Kind::Bool,
+        Some("LTR_NO_TLS"),
+        Some("false"),
+        "Disable TLS (client tunnels and server)",
+    ),
+    KeySpec::new(
+        "tls-ca",
+        Kind::Path,
+        Some("LTR_TLS_CA"),
+        None,
+        "CA PEM validating the remote TLS certificate",
+    ),
+    KeySpec::new(
+        "tls-fingerprint",
+        Kind::Str,
+        Some("LTR_TLS_FINGERPRINT"),
+        None,
+        "SHA-256 fingerprint of the remote TLS certificate",
+    ),
+    KeySpec::new(
+        "tls-server-name",
+        Kind::Str,
+        Some("LTR_TLS_SERVER_NAME"),
+        None,
+        "TLS server name; defaults to --to",
+    ),
+    KeySpec::new(
+        "tls-client-cert",
+        Kind::Path,
+        Some("LTR_TLS_CLIENT_CERT"),
+        None,
+        "Client certificate PEM for mutual tunnel TLS",
+    ),
+    KeySpec::new(
+        "tls-client-key",
+        Kind::Path,
+        Some("LTR_TLS_CLIENT_KEY"),
+        None,
+        "Client private key PEM for mutual tunnel TLS",
+    ),
+    KeySpec::new(
+        "min-port",
+        Kind::Port,
+        Some("LTR_MIN_PORT"),
+        Some("1024"),
+        "Server: minimum accepted tunnel port",
+    ),
+    KeySpec::new(
+        "max-port",
+        Kind::Port,
+        Some("LTR_MAX_PORT"),
+        Some("65535"),
+        "Server: maximum accepted tunnel port",
+    ),
+    KeySpec::new(
+        "bind-addr",
+        Kind::Ip,
+        None,
+        Some("0.0.0.0"),
+        "Server: control bind address",
+    ),
+    KeySpec::new(
+        "bind-tunnels",
+        Kind::Ip,
+        None,
+        None,
+        "Server: tunnel listener address; defaults to bind-addr",
+    ),
+    KeySpec::new(
+        "tls-cert",
+        Kind::Path,
+        Some("LTR_TLS_CERT"),
+        None,
+        "Server: PEM certificate overriding the generated one",
+    ),
+    KeySpec::new(
+        "tls-key",
+        Kind::Path,
+        Some("LTR_TLS_KEY"),
+        None,
+        "Server: PEM private key for tunnel TLS",
+    ),
+    KeySpec::new(
+        "tls-client-ca",
+        Kind::Path,
+        Some("LTR_TLS_CLIENT_CA"),
+        None,
+        "Server: CA PEM requiring client certificates",
+    ),
 ];
 
 /// Looks up a key specification by name.
@@ -646,5 +696,19 @@ mod tests {
         assert!(Kind::Addr.parse("127.0.0.1").is_err());
         assert!(Kind::Bool.parse("yes").is_ok());
         assert!(Kind::Bool.parse("maybe").is_err());
+    }
+
+    #[test]
+    fn secret_keys_display_masked() {
+        let secret = super::key_spec("secret").expect("secret key exists");
+        let token = super::key_spec("web-token").expect("web-token key exists");
+        assert!(secret.masked);
+        assert!(token.masked);
+        assert_eq!(super::display_value(secret, "hunter2"), super::MASKED_VALUE);
+        assert_eq!(super::display_value(token, "tok-123"), super::MASKED_VALUE);
+
+        let to = super::key_spec("to").expect("to key exists");
+        assert!(!to.masked);
+        assert_eq!(super::display_value(to, "relay.example"), "relay.example");
     }
 }

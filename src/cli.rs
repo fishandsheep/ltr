@@ -698,9 +698,11 @@ async fn run_conf(conf_args: &ConfArgs) -> Result<()> {
                         )
                     })?;
                     match conf::resolve_below_cli(key, &file) {
-                        Some(resolved) => {
-                            outln!("{key} = {}   (from {})", resolved.value, resolved.source)
-                        }
+                        Some(resolved) => outln!(
+                            "{key} = {}   (from {})",
+                            conf::display_value(spec, &resolved.value),
+                            resolved.source
+                        ),
                         None => outln!("{key} = (not set)"),
                     }
                     outln!("# {}", spec.help);
@@ -722,7 +724,7 @@ async fn run_conf(conf_args: &ConfArgs) -> Result<()> {
                             Some(resolved) => outln!(
                                 "{:<18} {:<28} {:<7} {}",
                                 spec.name,
-                                resolved.value,
+                                conf::display_value(spec, &resolved.value),
                                 resolved.source,
                                 spec.help
                             ),
@@ -739,8 +741,11 @@ async fn run_conf(conf_args: &ConfArgs) -> Result<()> {
             let mut file = FileConfig::load()?;
             file.set(key, value)?;
             file.save()?;
+            let shown = conf::key_spec(key)
+                .map(|spec| conf::display_value(spec, value))
+                .unwrap_or(value);
             outln!(
-                "{} = {value}   (saved to {})",
+                "{} = {shown}   (saved to {})",
                 key,
                 FileConfig::path().display()
             );
