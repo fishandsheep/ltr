@@ -639,7 +639,7 @@ pub async fn run(args: Args, eff: Eff) -> Result<()> {
     }
 
     if args.list {
-        return run_list();
+        return run_list().await;
     }
     if let Some(stop) = args.stop {
         return run_stop(stop).await;
@@ -933,32 +933,71 @@ async fn run_tunnel(local_args: LocalArgs, kind: &str) -> Result<()> {
     with_auth_hint(result)
 }
 
-/// Lists running instances (`ltr -l`).
-fn run_list() -> Result<()> {
+/// Lists running instances (`ltr -l`) with the local-service column.
+async fn run_list() -> Result<()> {
     let records = instances::load_live()?;
     if records.is_empty() {
         outln!("No running LTR instances.");
         return Ok(());
     }
-    outln!(
-        "{:<3} {:<8} {:<24} {:<34} {:<8}",
-        "NO",
-        "KIND",
-        "LOCAL",
-        "REMOTE",
-        "PID"
-    );
-    for (index, record) in records.iter().enumerate() {
-        outln!(
-            "{:<3} {:<8} {:<24} {:<34} {:<8}",
-            index + 1,
-            record.kind,
-            record.local,
-            record.remote.as_deref().unwrap_or("-"),
-            record.pid
-        );
-    }
+    let svc = probe_local_services(&records).await;
+    print_instances(&records, Some(&svc));
     Ok(())
+}
+
+/// Local-service probe budget per endpoint in `ltr -l`: one short connect
+/// attempt. Probes run concurrently, so the whole listing pays this once.
+const SVC_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Probes every record's local endpoint concurrently and returns one status
+/// per record: `Some(true)` when a service accepts the connection, `Some(false)`
+/// when nothing listens, `None` when the endpoint cannot be parsed. For
+/// tunnel/ssh records this is the forwarded local service; for console, web,
+/// and server records it is the process's own listener, which therefore shows
+/// `up`. Wildcard bind addresses are probed on loopback.
+async fn probe_local_services(records: &[Record]) -> Vec<Option<bool>> {
+    let mut handles = Vec::with_capacity(records.len());
+    for record in records {
+        let endpoint = record.local.clone();
+        handles.push(tokio::spawn(async move {
+            let (host, port) = split_local_endpoint(&endpoint)?;
+            let host = match host.as_str() {
+                "" | "0.0.0.0" => "127.0.0.1".to_string(),
+                "::" => "::1".to_string(),
+                other => other
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_string(),
+            };
+            let connected = tokio::time::timeout(
+                SVC_PROBE_TIMEOUT,
+                tokio::net::TcpStream::connect((host.as_str(), port)),
+            )
+            .await;
+            Some(connected.is_ok_and(|result| result.is_ok()))
+        }));
+    }
+    let statuses = futures_util::future::join_all(handles).await;
+    statuses
+        .into_iter()
+        .map(|status| status.unwrap_or(None))
+        .collect()
+}
+
+/// Splits a `host:port` record endpoint; `None` when no trailing port parses.
+fn split_local_endpoint(endpoint: &str) -> Option<(String, u16)> {
+    let (host, port) = endpoint.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    Some((host.to_string(), port))
+}
+
+/// Renders the local-service status marker for the `SVC` column.
+fn svc_label(status: Option<bool>) -> &'static str {
+    match status {
+        Some(true) => "up",
+        Some(false) => "down",
+        None => "-",
+    }
 }
 
 /// Stops running instances (`ltr -s [PORT]`), interactively when no port is
@@ -974,12 +1013,12 @@ async fn run_stop(port: Option<u16>) -> Result<()> {
                 .collect();
             match matches.as_slice() {
                 [] => {
-                    print_instances(&records);
+                    print_instances(&records, None);
                     bail!("no running instance exposes port {port}");
                 }
                 [only] => vec![only.clone()],
                 many => {
-                    print_instances(many);
+                    print_instances(many, None);
                     bail!("port {port} matches several instances; stop by a unique port");
                 }
             }
@@ -989,7 +1028,7 @@ async fn run_stop(port: Option<u16>) -> Result<()> {
                 outln!("No running LTR instances.");
                 return Ok(());
             }
-            print_instances(&records);
+            print_instances(&records, None);
             print!("Stop which instance? Enter a number, a for all, or q to cancel: ");
             use std::io::Write;
             std::io::stdout().flush().ok();
@@ -1037,24 +1076,50 @@ fn exposes_port(record: &Record, port: u16) -> bool {
     port_of(&record.local) == Some(port) || record.remote.as_deref().and_then(port_of) == Some(port)
 }
 
-fn print_instances(records: &[Record]) {
-    outln!(
-        "{:<3} {:<8} {:<24} {:<34} {:<8}",
-        "NO",
-        "KIND",
-        "LOCAL",
-        "REMOTE",
-        "PID"
-    );
-    for (index, record) in records.iter().enumerate() {
-        outln!(
-            "{:<3} {:<8} {:<24} {:<34} {:<8}",
-            index + 1,
-            record.kind,
-            record.local,
-            record.remote.as_deref().unwrap_or("-"),
-            record.pid
-        );
+fn print_instances(records: &[Record], svc: Option<&[Option<bool>]>) {
+    match svc {
+        Some(svc) => {
+            outln!(
+                "{:<3} {:<8} {:<24} {:<6} {:<34} {:<8}",
+                "NO",
+                "KIND",
+                "LOCAL",
+                "SVC",
+                "REMOTE",
+                "PID"
+            );
+            for (index, record) in records.iter().enumerate() {
+                outln!(
+                    "{:<3} {:<8} {:<24} {:<6} {:<34} {:<8}",
+                    index + 1,
+                    record.kind,
+                    record.local,
+                    svc_label(svc[index]),
+                    record.remote.as_deref().unwrap_or("-"),
+                    record.pid
+                );
+            }
+        }
+        None => {
+            outln!(
+                "{:<3} {:<8} {:<24} {:<34} {:<8}",
+                "NO",
+                "KIND",
+                "LOCAL",
+                "REMOTE",
+                "PID"
+            );
+            for (index, record) in records.iter().enumerate() {
+                outln!(
+                    "{:<3} {:<8} {:<24} {:<34} {:<8}",
+                    index + 1,
+                    record.kind,
+                    record.local,
+                    record.remote.as_deref().unwrap_or("-"),
+                    record.pid
+                );
+            }
+        }
     }
 }
 
@@ -1388,6 +1453,45 @@ mod tests {
         let args = Args::try_parse_from(["ltr", "update"]).expect("parse should succeed");
         assert!(matches!(args.command, Some(Command::Update)));
         assert!(args.is_quick());
+    }
+
+    #[test]
+    fn svc_labels_and_endpoint_splitting() {
+        assert_eq!(super::svc_label(Some(true)), "up");
+        assert_eq!(super::svc_label(Some(false)), "down");
+        assert_eq!(super::svc_label(None), "-");
+        assert_eq!(
+            super::split_local_endpoint("127.0.0.1:8000").unwrap(),
+            ("127.0.0.1".to_string(), 8000)
+        );
+        assert_eq!(
+            super::split_local_endpoint("::1:22").unwrap(),
+            ("::1".to_string(), 22)
+        );
+        assert!(super::split_local_endpoint("abc").is_none());
+        assert!(super::split_local_endpoint("host:notaport").is_none());
+    }
+
+    #[tokio::test]
+    async fn local_service_probe_reports_up_down_and_unknown() {
+        use tokio::net::TcpListener;
+
+        use crate::instances::Record;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_port = listener.local_addr().unwrap().port();
+        // Bind then drop to find a port nothing listens on.
+        let gone = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let down_port = gone.local_addr().unwrap().port();
+        drop(gone);
+
+        let records = vec![
+            Record::new("tunnel", format!("127.0.0.1:{up_port}"), None, None),
+            Record::new("tunnel", format!("127.0.0.1:{down_port}"), None, None),
+            Record::new("tunnel", "not-an-endpoint".to_string(), None, None),
+        ];
+        let statuses = super::probe_local_services(&records).await;
+        assert_eq!(statuses, vec![Some(true), Some(false), None]);
     }
 
     #[test]

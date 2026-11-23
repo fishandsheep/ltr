@@ -115,9 +115,9 @@ ltr 8000              # 使用配置的 relay
 列出并停止正在运行的实例：
 
 ```sh
-ltr -l          # 列出已暴露的端口
+ltr -l          # 列出已暴露的端口（SVC 列显示本地服务是否在监听）
 ltr -s 9000     # 按端口停止
-ltr -s          # 交互式选择停止
+ltr -s          # 交互式选择停止（a 全停，q 取消）
 ltr update      # 从 GitHub Releases 自更新（npm/cargo 安装会提示走原渠道）
 ```
 

@@ -120,9 +120,9 @@ working.
 List and stop running instances:
 
 ```sh
-ltr -l          # list exposed ports
+ltr -l          # list exposed ports (SVC column shows whether the local service is listening)
 ltr -s 9000     # stop by port
-ltr -s          # interactive picker
+ltr -s          # interactive picker (a stops all, q cancels)
 ltr update      # self-update from GitHub Releases (npm/cargo installs get a hint instead)
 ```
 
