@@ -5,6 +5,7 @@ use std::{
     ffi::OsString,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
@@ -831,10 +832,30 @@ fn build_local_args(
     }
 }
 
+/// Probes the local endpoint and warns when nothing listens on it yet. The
+/// tunnel is still established — a service started later is forwarded to —
+/// but a silent mismatch (mistyped port, service not yet up) is the most
+/// likely accident, so it deserves a line on the terminal. Best effort: probe
+/// failures of any kind stay silent.
+async fn warn_if_no_local_service(local_host: &str, local_port: u16) {
+    let probe = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::net::TcpStream::connect((local_host, local_port)),
+    )
+    .await;
+    if probe.map_or(true, |result| result.is_err()) {
+        eprintln!(
+            "Warning: no service is listening on {local_host}:{local_port} yet; \
+             the tunnel is up and will forward traffic once it starts."
+        );
+    }
+}
+
 /// Runs a plain local tunnel with the background ready hook and instance
 /// record wired to the first `Started` event, which carries the assigned
 /// remote port. `kind` names the instance in `ltr -l`.
 async fn run_tunnel(local_args: LocalArgs, kind: &str) -> Result<()> {
+    warn_if_no_local_service(&local_args.local_host, local_args.local_port).await;
     let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
     daemon::spawn_finish(ready_rx);
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
