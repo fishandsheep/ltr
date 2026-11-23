@@ -34,7 +34,7 @@ const DEFAULT_WEB_PORT: u16 = 7836;
 /// Default remote port for the exposed SSH tunnel (`ltr ssh`).
 const SSH_DEFAULT_REMOTE_PORT: u16 = 2222;
 
-const AFTER_HELP: &str = "Examples:\n  ltr 8000 -t your-server.example\n  ltr 8000\n  ltr 192.168.1.5:8000 -t your-server.example -p 9000\n  ltr web\n  ltr ssh\n  ltr server\n  ltr -l\n  ltr -s 9000\n  ltr conf set to your-server.example\n  ltr update";
+const AFTER_HELP: &str = "Examples:\n  ltr conf set to your-server.example\n  ltr 8000\n  ltr 192.168.1.5:8000 -t your-server.example -p 9000";
 
 /// Shared local web console arguments (all hidden power flags; the defaults
 /// live in the conf registry).
@@ -1365,10 +1365,25 @@ mod tests {
     #[test]
     fn help_mentions_new_examples() {
         let help = Args::command().render_long_help().to_string();
-        assert!(help.contains("ltr 8000 -t your-server.example"));
-        assert!(help.contains("ltr web"));
-        assert!(help.contains("ltr conf set to"));
+        assert!(help.contains("ltr conf set to your-server.example"));
+        assert!(help.contains("ltr 8000"));
+        assert!(help.contains("ltr 192.168.1.5:8000 -t your-server.example -p 9000"));
         assert!(!help.contains("npx @qinshower/ltr"));
+    }
+
+    #[test]
+    fn help_examples_are_minimal() {
+        let help = Args::command().render_long_help().to_string();
+        let examples = help
+            .split("Examples:")
+            .nth(1)
+            .unwrap_or_default()
+            .trim();
+        let lines: Vec<&str> = examples.lines().collect();
+        assert_eq!(lines.len(), 3, "exactly three examples: {examples}");
+        for gone in ["ltr web", "ltr ssh", "ltr server", "ltr -l", "ltr -s 9000", "ltr update"] {
+            assert!(!help.contains(gone), "example {gone} should be gone");
+        }
     }
 
     #[test]
