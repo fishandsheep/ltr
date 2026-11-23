@@ -864,9 +864,9 @@ async fn warn_if_no_local_service(local_host: &str, local_port: u16) {
 /// are outside this check. Matching is on the exact `host:port` string.
 fn reject_duplicate_tunnel(local_host: &str, local_port: u16) -> Result<()> {
     let local = format!("{local_host}:{local_port}");
-    let existing = instances::load_live()?.into_iter().find(|record| {
-        matches!(record.kind.as_str(), "tunnel" | "ssh") && record.local == local
-    });
+    let existing = instances::load_live()?
+        .into_iter()
+        .find(|record| matches!(record.kind.as_str(), "tunnel" | "ssh") && record.local == local);
     match existing {
         Some(existing) => bail!(
             "an LTR {} for {local} is already running (pid {}, remote {}).
@@ -990,9 +990,7 @@ async fn run_stop(port: Option<u16>) -> Result<()> {
                 return Ok(());
             }
             print_instances(&records);
-            print!(
-                "Stop which instance? Enter a number, a for all, or q to cancel: "
-            );
+            print!("Stop which instance? Enter a number, a for all, or q to cancel: ");
             use std::io::Write;
             std::io::stdout().flush().ok();
             let mut line = String::new();
@@ -1010,11 +1008,11 @@ async fn run_stop(port: Option<u16>) -> Result<()> {
                 }
                 return Ok(());
             }
-            let usage_hint =
-                format!("enter a number between 1 and {}, a for all, or q to cancel", records.len());
-            let index: usize = line
-                .parse()
-                .with_context(|| usage_hint.clone())?;
+            let usage_hint = format!(
+                "enter a number between 1 and {}, a for all, or q to cancel",
+                records.len()
+            );
+            let index: usize = line.parse().with_context(|| usage_hint.clone())?;
             let index = index
                 .checked_sub(1)
                 .filter(|index| *index < records.len())
@@ -1488,14 +1486,17 @@ mod tests {
     #[test]
     fn help_examples_are_minimal() {
         let help = Args::command().render_long_help().to_string();
-        let examples = help
-            .split("Examples:")
-            .nth(1)
-            .unwrap_or_default()
-            .trim();
+        let examples = help.split("Examples:").nth(1).unwrap_or_default().trim();
         let lines: Vec<&str> = examples.lines().collect();
         assert_eq!(lines.len(), 3, "exactly three examples: {examples}");
-        for gone in ["ltr web", "ltr ssh", "ltr server", "ltr -l", "ltr -s 9000", "ltr update"] {
+        for gone in [
+            "ltr web",
+            "ltr ssh",
+            "ltr server",
+            "ltr -l",
+            "ltr -s 9000",
+            "ltr update",
+        ] {
             assert!(!help.contains(gone), "example {gone} should be gone");
         }
     }
