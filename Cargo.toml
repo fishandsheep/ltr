@@ -1,6 +1,6 @@
 [package]
 name = "ltr-cli"
-version = "0.1.0"
+version = "0.1.1"
 license = "MIT"
 description = "Async-Rust TCP tunnel exposing local ports through a remote relay: encrypted by default, Web console included."
 repository = "https://github.com/fishandsheep/ltr"
@@ -49,8 +49,8 @@ rcgen = "0.14.7"
 rustls = "0.23.43"
 rustls-pemfile = "2.2.0"
 tokio-rustls = "0.26.4"
-ltr-protocol = { version = "0.1.0", path = "crates/ltr-protocol" }
-ltr-relay = { version = "0.1.0", path = "crates/ltr-relay" }
+ltr-protocol = { version = "0.1.1", path = "crates/ltr-protocol" }
+ltr-relay = { version = "0.1.1", path = "crates/ltr-relay" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
