@@ -851,10 +851,36 @@ async fn warn_if_no_local_service(local_host: &str, local_port: u16) {
     }
 }
 
+/// Fails when a live instance already forwards the same local endpoint.
+/// Duplicate tunnels on one local port are almost always an accident: the
+/// second run gets a different remote port and shadows the first, and
+/// `ltr -s <port>` can then no longer match a unique instance. Web-console
+/// managed tunnels live in the console process, not the run registry, so they
+/// are outside this check. Matching is on the exact `host:port` string.
+fn reject_duplicate_tunnel(local_host: &str, local_port: u16) -> Result<()> {
+    let local = format!("{local_host}:{local_port}");
+    let existing = instances::load_live()?.into_iter().find(|record| {
+        matches!(record.kind.as_str(), "tunnel" | "ssh") && record.local == local
+    });
+    match existing {
+        Some(existing) => bail!(
+            "an LTR {} for {local} is already running (pid {}, remote {}).
+
+\
+             Stop it first with: ltr -s {local_port}",
+            existing.kind,
+            existing.pid,
+            existing.remote.as_deref().unwrap_or("-"),
+        ),
+        None => Ok(()),
+    }
+}
+
 /// Runs a plain local tunnel with the background ready hook and instance
 /// record wired to the first `Started` event, which carries the assigned
 /// remote port. `kind` names the instance in `ltr -l`.
 async fn run_tunnel(local_args: LocalArgs, kind: &str) -> Result<()> {
+    reject_duplicate_tunnel(&local_args.local_host, local_args.local_port)?;
     warn_if_no_local_service(&local_args.local_host, local_args.local_port).await;
     let (ready_tx, ready_rx) = oneshot::channel::<Vec<String>>();
     daemon::spawn_finish(ready_rx);
@@ -1355,6 +1381,58 @@ mod tests {
     fn usage_line_shows_command_before_options() {
         let help = Args::command().render_help().to_string();
         assert!(help.contains("Usage: ltr [COMMAND] [OPTIONS]"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn duplicate_tunnel_for_same_local_endpoint_is_rejected() {
+        use std::{fs, time::SystemTime};
+
+        use crate::instances::Record;
+
+        let _guard = crate::instances::DATA_DIR_GUARD
+            .lock()
+            .expect("data dir lock should not be poisoned");
+        let root = std::env::temp_dir().join(format!(
+            "ltr-cli-dup-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let old = env::var_os("XDG_DATA_HOME");
+        env::set_var("XDG_DATA_HOME", &root);
+
+        // No live record: any endpoint starts.
+        super::reject_duplicate_tunnel("127.0.0.1", 8000).unwrap();
+
+        // A live tunnel on the same endpoint is rejected with stop guidance.
+        let record = Record::new(
+            "tunnel",
+            "127.0.0.1:8000".into(),
+            Some("relay.example:49152".into()),
+            Some("relay.example".into()),
+        );
+        record.write().unwrap();
+        let err = super::reject_duplicate_tunnel("127.0.0.1", 8000).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(message.contains("already running"), "message: {message}");
+        assert!(message.contains("ltr -s 8000"), "message: {message}");
+
+        // A different endpoint, or a non-tunnel kind, still starts.
+        super::reject_duplicate_tunnel("127.0.0.1", 9000).unwrap();
+        let console = Record::new("console", "127.0.0.1:8000".into(), None, None);
+        console.write().unwrap();
+        super::reject_duplicate_tunnel("127.0.0.1", 8000).unwrap();
+
+        Record::remove(record.pid);
+        Record::remove(console.pid);
+        match old {
+            Some(value) => env::set_var("XDG_DATA_HOME", value),
+            None => env::remove_var("XDG_DATA_HOME"),
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

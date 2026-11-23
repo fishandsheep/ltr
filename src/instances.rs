@@ -206,17 +206,19 @@ pub fn wait_gone(pid: u32, timeout_secs: u64) -> bool {
     !alive(pid)
 }
 
+/// Serializes tests that repoint the data directory via the environment;
+/// shared with the cli test module so XDG_DATA_HOME mutation never races.
+#[cfg(test)]
+pub(crate) static DATA_DIR_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, sync::Mutex, time::SystemTime};
+    use std::{env, fs, time::SystemTime};
 
     use super::{alive, load_live, run_dir, Record};
 
-    /// Serializes tests that repoint the data directory via the environment.
-    static DATA_DIR_GUARD: Mutex<()> = Mutex::new(());
-
     fn with_temp_data_dir<F: FnOnce(&std::path::Path)>(f: F) {
-        let _guard = DATA_DIR_GUARD
+        let _guard = super::DATA_DIR_GUARD
             .lock()
             .expect("data dir lock should not be poisoned");
         let old = env::var_os("XDG_DATA_HOME");
