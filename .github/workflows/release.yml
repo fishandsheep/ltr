@@ -53,11 +53,28 @@ jobs:
       - name: Publish Cargo packages
         shell: bash
         run: |
+          registry_has_version() {
+            local package="$1"
+            local version="$2"
+            local index_path
+            local length=${#package}
+            if (( length == 1 )); then
+              index_path="1/$package"
+            elif (( length == 2 )); then
+              index_path="2/$package"
+            elif (( length == 3 )); then
+              index_path="3/${package:0:1}/$package"
+            else
+              index_path="${package:0:2}/${package:2:2}/$package"
+            fi
+            curl --fail --silent --show-error "https://index.crates.io/$index_path" | grep -Fq "\"vers\":\"$version\""
+          }
+
           publish_if_missing() {
             local package="$1"
             local version
             version="$(cargo metadata --no-deps --format-version 1 | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => { const packages = JSON.parse(input).packages; console.log(packages.find(packageJson => packageJson.name === process.argv[1]).version); });" "$package")"
-            if cargo search "$package" --limit 20 | grep -q "^${package} = \"${version}\""; then
+            if registry_has_version "$package" "$version"; then
               echo "Skipping ${package}@${version}; already published"
               return 0
             fi
@@ -68,11 +85,11 @@ jobs:
           wait_for_registry() {
             local package="$1"
             local version="$2"
-            for _ in $(seq 1 30); do
-              if cargo search "$package" --limit 20 | grep -q "^${package} = \"${version}\""; then
+            for _ in $(seq 1 60); do
+              if registry_has_version "$package" "$version"; then
                 return 0
               fi
-              sleep 2
+              sleep 3
             done
             echo "Timed out waiting for ${package}@${version} to appear in crates.io"
             return 1
