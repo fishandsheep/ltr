@@ -11,11 +11,11 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::client::{run_local, LocalArgs, TunnelEvent};
+use crate::client::{run_local, LocalArgs};
 
 use super::registry::{self, TunnelRegistry};
 use super::runtime::{TunnelRole, TunnelRuntime};
-use super::session::{conflict, normalize_config, not_found};
+use super::session::{conflict, internal, normalize_config, not_found, ServiceProto};
 
 const POLL_DELAY: Duration = Duration::from_millis(50);
 
@@ -28,6 +28,9 @@ pub struct WebState {
     web_tls: Arc<Option<WebTlsConfig>>,
     limits: Arc<WebLimits>,
     store_path: Option<Arc<std::path::PathBuf>>,
+    /// Set when the existing store could not be preserved; saves are refused
+    /// so the unreadable file is never overwritten.
+    store_blocked: Option<Arc<String>>,
     start_lock: Arc<Mutex<()>>,
     persist_lock: Arc<Mutex<()>>,
 }
@@ -93,18 +96,57 @@ impl WebState {
     ) -> Self {
         let limits = limits.normalized();
         let mut registry = TunnelRegistry::default();
-        if let Some(path) = &store_path {
-            for (id, config, created_at) in registry::load_persisted(path) {
-                let Ok(config) = registry::validate_persisted(&config) else {
-                    continue;
-                };
-                let runtime = registry::runtime_from_persisted(
-                    id.clone(),
-                    config.clone(),
-                    created_at,
-                    limits.max_log_lines,
-                );
-                registry.insert(id, &config, runtime);
+        let mut store_blocked = None;
+        if let Some(path) = store_path.clone() {
+            let loopback_only = session.loopback_only;
+            let mut skipped = 0usize;
+            match registry::load_persisted(&path) {
+                Ok(persisted) => {
+                    for (id, config, created_at) in persisted {
+                        let Ok(config) = registry::validate_persisted(&config, loopback_only)
+                        else {
+                            skipped += 1;
+                            continue;
+                        };
+                        if registry.identities.contains_key(&config.identity_key()) {
+                            skipped += 1;
+                            continue;
+                        }
+                        let runtime = registry::runtime_from_persisted(
+                            id.clone(),
+                            config.clone(),
+                            created_at,
+                            limits.max_log_lines,
+                        );
+                        registry.insert(id, &config, runtime);
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "Warning: could not read tunnels from {}: {err}",
+                        path.display()
+                    );
+                    skipped = 1;
+                }
+            }
+            if skipped > 0 {
+                match registry::backup_store(&path) {
+                    Ok(backup) => eprintln!(
+                        "Warning: {skipped} persisted tunnel entr{} ignored; the original file was backed up to {}",
+                        if skipped == 1 { "y" } else { "ies" },
+                        backup.display()
+                    ),
+                    Err(err) => {
+                        eprintln!(
+                            "Warning: could not back up {}: {err}; tunnel persistence is disabled for this session to protect the file",
+                            path.display()
+                        );
+                        store_blocked = Some(Arc::new(format!(
+                            "tunnel store {} could not be backed up; refusing to overwrite it",
+                            path.display()
+                        )));
+                    }
+                }
             }
         }
 
@@ -115,6 +157,7 @@ impl WebState {
             web_tls: Arc::new(web_tls),
             limits: Arc::new(limits),
             store_path: store_path.map(Arc::new),
+            store_blocked,
             start_lock: Arc::new(Mutex::new(())),
             persist_lock: Arc::new(Mutex::new(())),
         }
@@ -145,32 +188,22 @@ impl WebState {
         self.session.read().await.clone()
     }
 
-    /// Persist user tunnels if a store path is configured.
-    async fn persist(&self) {
+    /// Writes the given persisted set to the store. Refuses to write while the
+    /// store is blocked; the caller must hold `persist_lock`. Callers change
+    /// memory only after this succeeds, so a failed save leaves state untouched.
+    fn save_records(&self, records: &[(String, TunnelConfig, String)]) -> Result<(), StateError> {
         let Some(path) = self.store_path.as_ref() else {
-            return;
+            return Ok(());
         };
-        let _persist_guard = self.persist_lock.lock().await;
-        let tunnels = self.tunnels.read().await;
-        let mut snapshot = Vec::new();
-        for entry in tunnels.entries.values() {
-            let runtime = entry.lock().await;
-            if !runtime.persisted_user {
-                continue;
-            }
-            snapshot.push((
-                runtime.id.clone(),
-                runtime.config.clone(),
-                runtime.created_at.clone(),
-            ));
+        if let Some(reason) = self.store_blocked.as_ref() {
+            return Err(internal(reason.to_string()));
         }
-        drop(tunnels);
-        if let Err(err) = registry::save_persisted(path, &snapshot) {
-            eprintln!(
-                "Warning: could not persist tunnels to {}: {err}",
+        registry::save_persisted(path, records).map_err(|err| {
+            internal(format!(
+                "could not save tunnels to {}: {err}",
                 path.display()
-            );
-        }
+            ))
+        })
     }
 
     pub async fn list_tunnels(&self) -> Vec<TunnelInfo> {
@@ -236,8 +269,9 @@ impl WebState {
             }
             runtime.touch();
             runtime.push_log("adopted by a system tunnel".to_string());
+            // No save: nothing persisted changed, and a failing save must not
+            // leave the tunnel half-adopted.
             drop(runtime);
-            self.persist().await;
             return Ok(existing_id);
         }
 
@@ -246,6 +280,7 @@ impl WebState {
 
     pub async fn update_tunnel(&self, id: &str, config: TunnelConfig) -> Result<(), StateError> {
         let _start_guard = self.start_lock.lock().await;
+        let _persist_guard = self.persist_lock.lock().await;
         let session = self.session().await;
         let config = normalize_config(config, session.loopback_only)?;
         let entry = self.entry(id).await?;
@@ -277,6 +312,7 @@ impl WebState {
 
             let Ok(mut runtime) = entry.try_lock() else {
                 drop(tunnels);
+                tokio::task::yield_now().await;
                 continue;
             };
             if runtime.locked {
@@ -291,6 +327,7 @@ impl WebState {
             if runtime.config.identity_key() != old_key {
                 drop(runtime);
                 drop(tunnels);
+                tokio::task::yield_now().await;
                 continue;
             }
 
@@ -298,19 +335,24 @@ impl WebState {
                 .secret
                 .clone()
                 .or_else(|| runtime.config.secret.clone());
-            runtime.config = TunnelConfig {
+            let updated = TunnelConfig {
                 secret,
                 ..config.clone()
             };
+            // Save first: a failed save must leave the tunnel as it was.
+            let mut records = persisted_records(&tunnels, Some(id)).await;
+            if runtime.persisted_user {
+                records.push((id.to_string(), updated.clone(), runtime.created_at.clone()));
+            }
+            self.save_records(&records)?;
+
+            runtime.config = updated;
             runtime.remote_port = None;
             runtime.error = None;
             runtime.touch();
             runtime.push_log("tunnel config updated".to_string());
             tunnels.identities.remove(&old_key);
             tunnels.identities.insert(config_key, id.to_string());
-            drop(runtime);
-            drop(tunnels);
-            self.persist().await;
             return Ok(());
         }
     }
@@ -382,6 +424,7 @@ impl WebState {
             }
             let Ok(mut runtime) = entry.try_lock() else {
                 drop(tunnels);
+                tokio::task::yield_now().await;
                 continue;
             };
             if matches!(
@@ -393,6 +436,7 @@ impl WebState {
             if runtime.config.identity_key() != config_key {
                 drop(runtime);
                 drop(tunnels);
+                tokio::task::yield_now().await;
                 continue;
             }
             runtime.status = TunnelStatus::Starting;
@@ -411,16 +455,12 @@ impl WebState {
         let state_for_events = self.clone();
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
-                let (remote_update, started) = {
+                let remote_update = {
                     let mut runtime = entry_for_events.lock().await;
-                    let started = matches!(event, TunnelEvent::Started { .. });
-                    (runtime.apply_event(event), started)
+                    runtime.apply_event(event)
                 };
                 if let Some((role, to, remote_port)) = remote_update {
                     update_session_remote(&state_for_events, role, &to, remote_port).await;
-                }
-                if started {
-                    super::probe::spawn_service_probe(Arc::clone(&entry_for_events));
                 }
             }
         });
@@ -458,10 +498,20 @@ impl WebState {
         Ok(())
     }
 
+    /// Stop a tunnel regardless of lock state. Takes `start_lock` so it cannot
+    /// interleave with a start that has reserved the tunnel but not yet
+    /// attached its shutdown handle.
     pub async fn stop_tunnel_force(&self, id: &str) -> Result<(), StateError> {
+        let _start_guard = self.start_lock.lock().await;
         let entry = self.entry(id).await?;
         Self::stop_entry(&entry).await;
         Ok(())
+    }
+
+    /// Detects the protocol of a running tunnel's local service (on request).
+    pub async fn detect_service(&self, id: &str) -> Result<ServiceProto, StateError> {
+        let entry = self.entry(id).await?;
+        super::probe::detect_tunnel_service(&entry).await
     }
 
     async fn stop_entry(entry: &Arc<Mutex<TunnelRuntime>>) {
@@ -489,6 +539,7 @@ impl WebState {
 
     pub async fn delete_tunnel(&self, id: &str) -> Result<(), StateError> {
         let _start_guard = self.start_lock.lock().await;
+        let _persist_guard = self.persist_lock.lock().await;
         let entry = self.entry(id).await?;
         {
             let runtime = entry.lock().await;
@@ -507,9 +558,10 @@ impl WebState {
             runtime.config.identity_key()
         };
         let mut tunnels = self.tunnels.write().await;
+        // Save without this tunnel first; memory only drops it once the file is written.
+        let records = persisted_records(&tunnels, Some(id)).await;
+        self.save_records(&records)?;
         tunnels.remove(id, &identity_key);
-        drop(tunnels);
-        self.persist().await;
         Ok(())
     }
 
@@ -590,6 +642,10 @@ impl WebState {
         let config = normalize_config(config, session.loopback_only)?;
 
         let config_key = config.identity_key();
+        // Save before commit: holding persist_lock keeps a concurrent save from
+        // writing this tunnel before it is accepted, and a failed save leaves
+        // memory unchanged.
+        let _persist_guard = self.persist_lock.lock().await;
         let mut tunnels = self.tunnels.write().await;
         if tunnels.identities.contains_key(&config_key) {
             return Err(conflict("an identical tunnel already exists"));
@@ -603,6 +659,11 @@ impl WebState {
 
         let now = super::session::now_rfc3339();
         let id = Uuid::new_v4().to_string();
+        if role == TunnelRole::User {
+            let mut records = persisted_records(&tunnels, None).await;
+            records.push((id.clone(), config.clone(), now.clone()));
+            self.save_records(&records)?;
+        }
         let runtime = TunnelRuntime {
             id: id.clone(),
             config: config.clone(),
@@ -628,10 +689,6 @@ impl WebState {
             service_proto: None,
         };
         tunnels.insert(id.clone(), &config, runtime);
-        drop(tunnels);
-        if role == TunnelRole::User {
-            self.persist().await;
-        }
         Ok(id)
     }
 
@@ -685,6 +742,29 @@ impl fmt::Debug for WebTlsConfig {
             .field("key_pem", &"[redacted]")
             .finish()
     }
+}
+
+/// Persisted records of every user tunnel except `skip`. Callers add the
+/// record they are about to commit, so the file is written before memory changes.
+async fn persisted_records(
+    tunnels: &TunnelRegistry,
+    skip: Option<&str>,
+) -> Vec<(String, TunnelConfig, String)> {
+    let mut records = Vec::new();
+    for (id, entry) in &tunnels.entries {
+        if skip == Some(id.as_str()) {
+            continue;
+        }
+        let runtime = entry.lock().await;
+        if runtime.persisted_user {
+            records.push((
+                runtime.id.clone(),
+                runtime.config.clone(),
+                runtime.created_at.clone(),
+            ));
+        }
+    }
+    records
 }
 
 #[cfg(test)]
@@ -898,6 +978,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_publishes_nothing_while_a_save_holds_persist_lock() {
+        let state = WebState::default();
+        let guard = state.persist_lock.lock().await;
+        let blocked = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            state.create_tunnel(config("pending")),
+        )
+        .await;
+        assert!(blocked.is_err(), "create must wait for persist_lock");
+        assert!(state.list_tunnels().await.is_empty());
+        drop(guard);
+        state
+            .create_tunnel(config("pending"))
+            .await
+            .expect("create proceeds once the lock is free");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_create_save_leaves_no_tunnel_in_memory() {
+        let dir = std::env::temp_dir().join(format!("ltr-create-nosave-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let store = dir.join("tunnels.toml");
+        let state = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store),
+        );
+        {
+            let _readonly = ReadOnlyDir::new(&dir);
+            state
+                .create_tunnel(config("unsaved"))
+                .await
+                .expect_err("save into a read-only store must fail");
+            assert!(state.list_tunnels().await.is_empty());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn adoption_does_not_depend_on_a_successful_save() {
+        let dir = std::env::temp_dir().join(format!("ltr-adopt-nosave-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let store = dir.join("tunnels.toml");
+        let state = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store.clone()),
+        );
+        let user_id = state
+            .create_tunnel(config("adopt-me"))
+            .await
+            .expect("user tunnel should be created");
+        {
+            let _readonly = ReadOnlyDir::new(&dir);
+            let adopted = state
+                .ensure_system_tunnel(super::SystemTunnelSpec {
+                    role: SystemTunnelRole::WebConsole,
+                    config: config("Web Console"),
+                    display_url: None,
+                })
+                .await
+                .expect("adoption must not require a successful save");
+            assert_eq!(adopted, user_id);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn adopted_user_tunnel_remains_persisted() {
         let store = std::env::temp_dir().join(format!(
             "ltr-adopted-tunnel-test-{}.toml",
@@ -932,7 +1086,6 @@ mod tests {
             )
             .await
             .expect_err("adopted system tunnel is locked to user edits");
-        state.persist().await;
 
         let persisted = std::fs::read_to_string(&store).expect("user tunnel remains on disk");
         assert!(persisted.contains(&user_id));
@@ -984,6 +1137,294 @@ mod tests {
         assert!(tunnels[0].has_secret, "secret round-trips on disk");
         assert_eq!(tunnels[0].status, TunnelStatus::Stopped);
         let _ = std::fs::remove_file(&store);
+    }
+
+    #[tokio::test]
+    async fn detect_service_requires_a_running_tunnel() {
+        let state = WebState::new(SessionInfo::local());
+        let id = state.create_tunnel(config("dev")).await.expect("create");
+        let err = state
+            .detect_service(&id)
+            .await
+            .expect_err("stopped tunnel must not be probed");
+        assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn detect_service_records_protocol_on_explicit_request() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 64];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\n\r\n").await;
+            }
+        });
+
+        let state = WebState::new(SessionInfo::local());
+        let id = state
+            .create_tunnel(TunnelConfig {
+                local_port: port,
+                ..config("web")
+            })
+            .await
+            .expect("create");
+        let entry = state.entry(&id).await.expect("entry");
+        entry.lock().await.status = TunnelStatus::Running;
+
+        let proto = state.detect_service(&id).await.expect("probe");
+        assert_eq!(proto, super::ServiceProto::Http);
+        assert_eq!(
+            entry.lock().await.service_proto,
+            Some(super::ServiceProto::Http)
+        );
+    }
+
+    fn temp_store(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ltr-{label}-{}.toml", uuid::Uuid::new_v4()))
+    }
+
+    /// Makes a directory read-only and restores it on drop, so a failing
+    /// assertion cannot leave an undeletable temp directory behind.
+    #[cfg(unix)]
+    struct ReadOnlyDir(std::path::PathBuf);
+
+    #[cfg(unix)]
+    impl ReadOnlyDir {
+        fn new(dir: &std::path::Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Self(dir.to_path_buf())
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ReadOnlyDir {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    fn backups_of(store: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let dir = store.parent().expect("temp dir");
+        let prefix = format!("{}.bak-", store.file_name().unwrap().to_string_lossy());
+        std::fs::read_dir(dir)
+            .expect("read temp dir")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn unreadable_store_is_backed_up_before_being_overwritten() {
+        let store = temp_store("corrupt-store");
+        let garbage = "this is [not valid toml";
+        std::fs::write(&store, garbage).unwrap();
+
+        let state = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store.clone()),
+        );
+        state
+            .create_tunnel(config("fresh"))
+            .await
+            .expect("create should still work");
+
+        let backups = backups_of(&store);
+        assert_eq!(backups.len(), 1, "original file must be kept once");
+        assert_eq!(std::fs::read_to_string(&backups[0]).unwrap(), garbage);
+        let _ = std::fs::remove_file(&store);
+        let _ = std::fs::remove_file(&backups[0]);
+    }
+
+    #[tokio::test]
+    async fn invalid_persisted_entries_are_backed_up_and_skipped() {
+        let store = temp_store("invalid-entry-store");
+        let mut loopback_ok = config("ok");
+        loopback_ok.local_host = "127.0.0.1".into();
+        let mut remote = config("remote");
+        remote.local_host = "192.168.1.10".into();
+        let writer = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store.clone()),
+        );
+        writer.create_tunnel(loopback_ok).await.unwrap();
+        writer.create_tunnel(remote).await.unwrap();
+
+        // Remote mode only accepts loopback targets, so the second entry is
+        // rejected on load and the original file must be preserved.
+        let remote_session = SessionInfo {
+            loopback_only: true,
+            ..SessionInfo::local()
+        };
+        let reloaded = WebState::with_limits_and_store(
+            remote_session,
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store.clone()),
+        );
+        let tunnels = reloaded.list_tunnels().await;
+        assert_eq!(tunnels.len(), 1);
+        assert_eq!(tunnels[0].config.name, "ok");
+        assert_eq!(backups_of(&store).len(), 1);
+        let _ = std::fs::remove_file(&store);
+        for backup in backups_of(&store) {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn saves_are_refused_when_a_corrupt_store_cannot_be_backed_up() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_store("blocked-dir");
+        std::fs::create_dir(&dir).unwrap();
+        let store = dir.join("tunnels.toml");
+        std::fs::write(&store, "not = [valid").unwrap();
+        // Readable but not writable: the backup copy cannot be created.
+        let _readonly = ReadOnlyDir::new(&dir);
+        let state = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store.clone()),
+        );
+        let err = state
+            .create_tunnel(config("blocked"))
+            .await
+            .expect_err("save must be refused");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(std::fs::read_to_string(&store).unwrap(), "not = [valid");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_file(&store);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_save_is_reported_and_rolled_back() {
+        // A read-only directory loads fine but cannot accept the atomic rewrite.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_store("readonly-dir");
+        std::fs::create_dir(&dir).unwrap();
+        let store_path = dir.join("tunnels.toml");
+        std::fs::write(&store_path, "").unwrap();
+        let _readonly = ReadOnlyDir::new(&dir);
+        let state = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store_path.clone()),
+        );
+        let err = state
+            .create_tunnel(config("unsaved"))
+            .await
+            .expect_err("save failure must surface");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.list_tunnels().await.is_empty(), "rolled back");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_file(&store_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_update_or_delete_save_leaves_the_tunnel_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_store("readonly-edit");
+        std::fs::create_dir(&dir).unwrap();
+        let store_path = dir.join("tunnels.toml");
+        std::fs::write(&store_path, "").unwrap();
+        let state = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store_path.clone()),
+        );
+        let id = state.create_tunnel(config("kept")).await.expect("create");
+        let _readonly = ReadOnlyDir::new(&dir);
+
+        let err = state
+            .update_tunnel(
+                &id,
+                TunnelConfig {
+                    local_port: 4000,
+                    ..config("kept")
+                },
+            )
+            .await
+            .expect_err("update save failure must surface");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        let listed = state.list_tunnels().await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].config.local_port, 3000,
+            "edit must not stick in memory"
+        );
+
+        let err = state
+            .delete_tunnel(&id)
+            .await
+            .expect_err("delete save failure must surface");
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            state.list_tunnels().await.len(),
+            1,
+            "tunnel must still exist"
+        );
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        state
+            .delete_tunnel(&id)
+            .await
+            .expect("delete once writable");
+        assert!(state.list_tunnels().await.is_empty());
+        let _ = std::fs::remove_file(&store_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[tokio::test]
+    async fn force_stop_never_leaves_a_stopped_tunnel_with_a_live_handle() {
+        // Refused connections make each start fail fast, so start and force
+        // stop race on the reservation window many times.
+        for _ in 0..25 {
+            let state = WebState::default();
+            let mut refused = config("race");
+            refused.to = "127.0.0.1".into();
+            refused.port = Some(9);
+            refused.local_port = 1;
+            let id = state.create_tunnel(refused).await.unwrap();
+            let (started, stopped) =
+                tokio::join!(state.start_tunnel(&id), state.stop_tunnel_force(&id));
+            let _ = started;
+            stopped.expect("force stop should succeed");
+            let runtime = state.entry(&id).await.unwrap();
+            let runtime = runtime.lock().await;
+            assert!(
+                !(runtime.status == TunnelStatus::Stopped && runtime.handle.is_some()),
+                "stopped tunnel must not own a running handle"
+            );
+        }
     }
 
     #[test]

@@ -45,15 +45,6 @@ pub struct WebConsoleArgs {
     #[arg(long = "web-addr", hide = true)]
     pub web_addr: Option<SocketAddr>,
 
-    /// Bearer token for Web API requests.
-    #[arg(
-        long = "web-token",
-        env = "LTR_WEB_TOKEN",
-        hide = true,
-        hide_env_values = true
-    )]
-    pub web_token: Option<String>,
-
     /// Maximum number of tunnel definitions in the Web control plane.
     #[arg(long = "web-max-tunnels", hide = true)]
     pub web_max_tunnels: Option<usize>,
@@ -78,15 +69,6 @@ pub struct TunnelArgs {
     /// Remote port to request on the relay; 0 asks for a free port.
     #[arg(short = 'p', long = "dport", value_name = "PORT")]
     pub dport: Option<u16>,
-
-    /// Optional secret for authentication.
-    #[arg(
-        long = "secret",
-        env = "LTR_SECRET",
-        hide = true,
-        hide_env_values = true
-    )]
-    pub secret: Option<String>,
 
     /// Disable TLS and connect over plaintext (for relays without TLS).
     #[arg(long = "no-tls", action = ArgAction::SetTrue, hide = true)]
@@ -123,7 +105,6 @@ impl std::fmt::Debug for TunnelArgs {
             .debug_struct("TunnelArgs")
             .field("to", &self.to)
             .field("dport", &self.dport)
-            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
             .field("no_tls", &self.no_tls)
             .field("tls_ca", &self.tls_ca)
             .field("tls_fingerprint", &self.tls_fingerprint)
@@ -140,7 +121,6 @@ impl std::fmt::Debug for WebConsoleArgs {
         formatter
             .debug_struct("WebConsoleArgs")
             .field("web_addr", &self.web_addr)
-            .field("web_token", &self.web_token.as_ref().map(|_| "[redacted]"))
             .field("web_max_tunnels", &self.web_max_tunnels)
             .field("web_max_connections", &self.web_max_connections)
             .field("web_max_log_lines", &self.web_max_log_lines)
@@ -155,7 +135,6 @@ impl TunnelArgs {
         TunnelArgs {
             to: pick(self.to.clone(), top.to.clone()),
             dport: self.dport.or(top.dport),
-            secret: pick(self.secret.clone(), top.secret.clone()),
             no_tls: self.no_tls || top.no_tls,
             tls_ca: self.tls_ca.clone().or(top.tls_ca.clone()),
             tls_fingerprint: pick(self.tls_fingerprint.clone(), top.tls_fingerprint.clone()),
@@ -355,10 +334,6 @@ pub struct ServerArgs {
     #[arg(long, hide = true)]
     pub max_port: Option<u16>,
 
-    /// Optional secret for authentication.
-    #[arg(long, env = "LTR_SECRET", hide = true, hide_env_values = true)]
-    pub secret: Option<String>,
-
     /// IP address to bind to, clients must reach this.
     #[arg(long, hide = true)]
     pub bind_addr: Option<IpAddr>,
@@ -452,7 +427,6 @@ impl std::fmt::Debug for ServerArgs {
             .debug_struct("ServerArgs")
             .field("min_port", &self.min_port)
             .field("max_port", &self.max_port)
-            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
             .field("bind_addr", &self.bind_addr)
             .field("bind_tunnels", &self.bind_tunnels)
             .field("no_tls", &self.no_tls)
@@ -523,12 +497,9 @@ impl Eff {
         Self {
             to: conf::layered_str("to", tunnel.to, file),
             dport: conf::layered_u16("dport", tunnel.dport, file),
-            // The secret key is shared by tunnels and the server subcommand.
-            secret: conf::layered_str(
-                "secret",
-                tunnel.secret.clone().or(server.secret.clone()),
-                file,
-            ),
+            // Secrets are never accepted on argv (visible in `ps`); they come
+            // from LTR_SECRET or `ltr conf set secret` via the conf layers.
+            secret: conf::layered_str("secret", None, file),
             // The no-tls key is shared: the tunnel layer (top level and
             // web/ssh subcommands) and the server subcommand all set it.
             no_tls: conf::layered_flag("no-tls", tunnel.no_tls || server.no_tls, file)
@@ -546,7 +517,7 @@ impl Eff {
             log_json: conf::layered_flag("log-json", args.log_json, file).unwrap_or(false),
             web_addr: conf::layered_addr("web-addr", args.web.web_addr, file)
                 .unwrap_or_else(|| "127.0.0.1:7836".parse().expect("default web addr")),
-            web_token: conf::layered_str("web-token", args.web.web_token.clone(), file),
+            web_token: conf::layered_str("web-token", None, file),
             web_max_tunnels: conf::layered_usize("web-max-tunnels", args.web.web_max_tunnels, file)
                 .unwrap_or(64),
             web_max_connections: conf::layered_usize(
@@ -627,7 +598,7 @@ fn with_auth_hint(result: Result<()>) -> Result<()> {
         if message.contains("requires authentication") {
             anyhow::anyhow!(
                 "{message}\n\nSet a secret with:\n  ltr conf set secret <value>\n\
-                 Or pass --secret <value>; the LTR_SECRET environment variable also works."
+                 Or export LTR_SECRET=<value> before starting ltr."
             )
         } else {
             anyhow::anyhow!(message)
@@ -1387,28 +1358,30 @@ pub async fn run_web_remote(eff: &Eff) -> Result<()> {
 mod tests {
     #[test]
     fn secret_bearing_debug_output_is_redacted() {
-        let args = super::Args::try_parse_from([
-            "ltr",
-            "--secret",
-            "relay-secret-value",
-            "--web-token",
-            "web-token-value",
-            "8000",
-        ])
-        .expect("arguments should parse");
-        let rendered = format!("{args:?}");
-        assert!(rendered.contains("target: Some(\"8000\")"));
+        let args = super::Args::try_parse_from(["ltr", "8000", "-t", "relay.example"])
+            .expect("arguments should parse");
+        let mut eff = super::Eff::resolve(&args, &crate::conf::FileConfig::default());
+        eff.secret = Some("relay-secret-value".to_string());
+        eff.web_token = Some("web-token-value".to_string());
+        let rendered = format!("{eff:?}");
         assert!(!rendered.contains("relay-secret-value"));
         assert!(!rendered.contains("web-token-value"));
         assert!(rendered.contains("secret: Some(\"[redacted]\")"));
         assert!(rendered.contains("web_token: Some(\"[redacted]\")"));
+    }
 
-        let args = super::Args::try_parse_from(["ltr", "8000", "-t", "relay.example"])
-            .expect("arguments should parse");
-        let eff = super::Eff::resolve(&args, &crate::conf::FileConfig::default());
-        let rendered = format!("{eff:?}");
-        assert!(!rendered.contains("relay-secret-value"));
-        assert!(!rendered.contains("web-token-value"));
+    #[test]
+    fn secret_flags_are_rejected_on_argv() {
+        for argv in [
+            &["ltr", "8000", "--secret", "relay-secret"][..],
+            &["ltr", "8000", "--web-token", "web-token"][..],
+            &["ltr", "server", "--secret", "relay-secret"][..],
+        ] {
+            assert!(
+                Args::try_parse_from(argv).is_err(),
+                "{argv:?} must not accept a secret on argv"
+            );
+        }
     }
     use std::env;
 
@@ -1435,16 +1408,17 @@ mod tests {
     }
 
     #[test]
-    fn secret_and_web_token_parse_from_hidden_environment() {
+    fn secret_and_web_token_resolve_from_environment() {
         guarded_env(|| {
             let old_secret = env::var_os("LTR_SECRET");
             let old_token = env::var_os("LTR_WEB_TOKEN");
             env::set_var("LTR_SECRET", "env-secret-value");
             env::set_var("LTR_WEB_TOKEN", "env-web-token-value");
             let args = Args::try_parse_from(["ltr", "8000", "-t", "relay.example"])
-                .expect("environment-backed credentials should parse");
-            assert_eq!(args.tunnel.secret.as_deref(), Some("env-secret-value"));
-            assert_eq!(args.web.web_token.as_deref(), Some("env-web-token-value"));
+                .expect("arguments should parse");
+            let eff = Eff::resolve(&args, &FileConfig::default());
+            assert_eq!(eff.secret.as_deref(), Some("env-secret-value"));
+            assert_eq!(eff.web_token.as_deref(), Some("env-web-token-value"));
             match old_secret {
                 Some(value) => env::set_var("LTR_SECRET", value),
                 None => env::remove_var("LTR_SECRET"),
@@ -1728,11 +1702,9 @@ mod tests {
             assert!(help.contains(core), "help should show {core}");
         }
         for hidden in [
-            "--secret",
             "--log-level",
             "--log-json",
             "--web-addr",
-            "--web-token",
             "--no-tls",
             "--tls-ca",
             "-v, --version",
@@ -1800,16 +1772,16 @@ mod tests {
     }
 
     #[test]
-    fn server_secret_flag_reaches_resolution() {
+    fn server_secret_env_reaches_resolution() {
         guarded_env(|| {
-            env::remove_var("LTR_SECRET");
-            let args = Args::try_parse_from(["ltr", "server", "--secret", "relay-secret"])
-                .expect("parse should succeed");
+            env::set_var("LTR_SECRET", "relay-secret");
+            let args = Args::try_parse_from(["ltr", "server"]).expect("parse should succeed");
             let eff = Eff::resolve(&args, &FileConfig::default());
+            env::remove_var("LTR_SECRET");
             assert_eq!(
                 eff.secret.as_deref(),
                 Some("relay-secret"),
-                "server --secret must reach the relay"
+                "LTR_SECRET must reach the server"
             );
         });
     }
@@ -1887,6 +1859,7 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains("ltr conf set secret"));
         assert!(message.contains("LTR_SECRET"));
+        assert!(!message.contains("--secret"));
 
         let err = super::with_auth_hint(Err(anyhow::anyhow!("connection refused")))
             .expect_err("should stay an error");

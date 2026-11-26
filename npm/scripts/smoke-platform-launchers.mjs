@@ -15,11 +15,15 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const ltrPackages = [
   "ltr-darwin-arm64",
   "ltr-linux-x64-musl",
+  "ltr-linux-arm64-gnu",
   "ltr-win32-x64-msvc"
 ];
 const cases = [
   ["darwin", "arm64", null, "ltr-darwin-arm64"],
   ["linux", "x64", [true, null], "ltr-linux-x64-musl"],
+  ["linux", "x64", [false, null], "ltr-linux-x64-musl"],
+  ["linux", "arm64", [false, null], "ltr-linux-arm64-gnu"],
+  ["linux", "arm64", [true, null], null],
   ["win32", "x64", null, "ltr-win32-x64-msvc"]
 ];
 
@@ -71,7 +75,13 @@ try {
         cwd: smokeRoot,
         encoding: "utf8"
       });
-      if (result.status !== 0 || result.stdout.trim() !== expectedPackage) {
+      if (expectedPackage === null) {
+        if (result.status !== 1 || !result.stderr.includes("Unsupported platform")) {
+          throw new Error(
+            label + " should reject an unsupported musl target, got exit " + result.status + ": " + result.stderr
+          );
+        }
+      } else if (result.status !== 0 || result.stdout.trim() !== expectedPackage) {
         throw new Error(
           label +
             " expected " +
@@ -92,4 +102,4 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true });
 }
 
-console.log("All 3 LTR platform launcher selections passed");
+console.log("All 4 LTR platform launcher selections passed");

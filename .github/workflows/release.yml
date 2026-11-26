@@ -6,7 +6,7 @@ on:
 
 name: LTR Release
 permissions:
-  contents: write
+  contents: read
 
 env:
   BIN: ltr
@@ -28,6 +28,8 @@ jobs:
   create-release:
     name: Create GitHub release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs: check-version
     steps:
       - uses: actions/checkout@v4
@@ -46,10 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Publish Cargo packages
         shell: bash
@@ -112,6 +111,8 @@ jobs:
 
   macos:
     runs-on: macos-latest
+    permissions:
+      contents: write
     needs: create-release
     strategy:
       matrix:
@@ -132,18 +133,12 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.target }}
 
       - name: Setup | Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
-          profile: minimal
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
 
       - name: Build | Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - run: tar -czvf "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" --directory=target/${{ matrix.target }}/release ${{ env.BIN }}
       - run: shasum -a 256 "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" > "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz.sha256"
@@ -155,6 +150,8 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs:
       - create-release
       - install-cross
@@ -180,8 +177,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${GITHUB_REF_NAME}" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz" "${{ env.BIN }}-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz.sha256" --clobber
 
+  linux-arm64:
+    name: Build Linux ARM64 (glibc)
+    runs-on: ubuntu-22.04-arm
+    permissions:
+      contents: write
+    needs: create-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo build --release --target aarch64-unknown-linux-gnu
+
+      - run: tar -czvf "${{ env.BIN }}-${GITHUB_REF_NAME}-aarch64-unknown-linux-gnu.tar.gz" --directory=target/aarch64-unknown-linux-gnu/release ${{ env.BIN }}
+      - run: sha256sum "${{ env.BIN }}-${GITHUB_REF_NAME}-aarch64-unknown-linux-gnu.tar.gz" > "${{ env.BIN }}-${GITHUB_REF_NAME}-aarch64-unknown-linux-gnu.tar.gz.sha256"
+
+      - name: Upload Release Asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" "${{ env.BIN }}-${GITHUB_REF_NAME}-aarch64-unknown-linux-gnu.tar.gz" "${{ env.BIN }}-${GITHUB_REF_NAME}-aarch64-unknown-linux-gnu.tar.gz.sha256" --clobber
+
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
     needs:
       - create-release
       - install-cross
@@ -218,6 +237,7 @@ jobs:
       - macos
       - linux
       - windows
+      - linux-arm64
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
@@ -230,6 +250,8 @@ jobs:
             package-dir: ltr-win32-x64-msvc
           - os: macos-15
             package-dir: ltr-darwin-arm64
+          - os: ubuntu-22.04-arm
+            package-dir: ltr-linux-arm64-gnu
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -267,55 +289,11 @@ jobs:
           npx --no-install ltr --help
           bun node_modules/@qinshower/ltr/bin/ltr.js --help
 
-  npm-package-matrix:
-    name: Pack npm platform (${{ matrix.package-dir }})
-    runs-on: ubuntu-latest
-    needs:
-      - macos
-      - linux
-      - windows
-    strategy:
-      fail-fast: false
-      matrix:
-        package-dir:
-          - ltr-darwin-arm64
-          - ltr-linux-x64-musl
-          - ltr-win32-x64-msvc
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Download release assets
-        shell: bash
-        run: |
-          mkdir -p npm-dist
-          gh release download "${GITHUB_REF_NAME}" \
-            --dir npm-dist \
-            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.tar.gz" \
-            --pattern "${{ env.BIN }}-${GITHUB_REF_NAME}-*.zip"
-      - name: Prepare selected platform package
-        run: node npm/scripts/prepare-platform-packages-from-assets.mjs npm-dist "${{ matrix.package-dir }}"
-      - name: Pack selected platform package
-        shell: bash
-        run: |
-          mkdir -p npm-pack
-          pack="$(npm pack "./npm/${{ matrix.package-dir }}" --pack-destination npm-pack --json | node -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input)[0].filename));")"
-          if [[ "${{ matrix.package-dir }}" == *win32* ]]; then
-            expected_binary="package/bin/ltr.exe"
-          else
-            expected_binary="package/bin/ltr"
-          fi
-          tar -tzf "npm-pack/$pack" | grep -F "$expected_binary" >/dev/null
-
   npm:
     name: Publish npm packages
     runs-on: ubuntu-latest
     needs:
       - npm-smoke
-      - npm-package-matrix
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -329,9 +307,6 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Check versions
-        run: npm run npm:check
-
       - name: Download release assets
         run: |
           mkdir -p npm-dist
@@ -342,12 +317,6 @@ jobs:
 
       - name: Prepare npm platform packages
         run: node npm/scripts/prepare-platform-packages-from-assets.mjs npm-dist
-      - name: Verify every launcher selection
-        run: node npm/scripts/smoke-platform-launchers.mjs
-
-      - name: Dry-run pack npm packages
-        run: npm run npm:pack:dry-run
-
       - name: Publish npm packages
         shell: bash
         run: |

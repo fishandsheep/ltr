@@ -1,0 +1,25 @@
+{
+  "name": "@qinshower/ltr-linux-arm64-gnu",
+  "version": "0.1.2",
+  "description": "The Linux arm64 glibc binary for LTR.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fishandsheep/ltr.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,7 +1,7 @@
 {
   "name": "@qinshower/ltr",
-  "version": "0.1.1",
-  "description": "Local-to-Remote TCP tunnel with a Bore-compatible protocol.",
+  "version": "0.1.2",
+  "description": "Local-to-Remote TCP tunnel with an LTR relay and Web console.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -19,9 +19,10 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "@qinshower/ltr-darwin-arm64": "0.1.1",
-    "@qinshower/ltr-linux-x64-musl": "0.1.1",
-    "@qinshower/ltr-win32-x64-msvc": "0.1.1"
+    "@qinshower/ltr-darwin-arm64": "0.1.2",
+    "@qinshower/ltr-linux-x64-musl": "0.1.2",
+    "@qinshower/ltr-linux-arm64-gnu": "0.1.2",
+    "@qinshower/ltr-win32-x64-msvc": "0.1.2"
   },
   "engines": {
     "node": ">=18"

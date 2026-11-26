@@ -1,10 +1,11 @@
 //! Best-effort local-service protocol probe for the web console.
 //!
-//! When a tunnel starts, the console connects to the forwarded local
-//! service once and fingerprints what it speaks, so the topology can
-//! show the protocol and only link services a browser can actually
-//! open (http/https). The probe carries no user data and validates
-//! nothing — its only output is the protocol label.
+//! On explicit user request (`POST /api/tunnels/:id/probe`), the console
+//! connects to the forwarded local service once and fingerprints what it
+//! speaks, so the topology can show the protocol and only link services a
+//! browser can actually open (http/https). The probe is never run
+//! automatically: it writes a request to a service the user did not ask us
+//! to touch. It carries no user data and validates nothing.
 
 #![allow(missing_docs)]
 
@@ -79,26 +80,34 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::runtime::TunnelRuntime;
-use super::session::TunnelStatus;
+use super::session::{conflict, StateError, TunnelStatus};
 
-/// Probe the tunnel's local service once it is running and record the
-/// detected protocol on the runtime (visible through the next API poll).
-pub(crate) fn spawn_service_probe(entry: Arc<Mutex<TunnelRuntime>>) {
-    tokio::spawn(async move {
-        let (host, port) = {
-            let runtime = entry.lock().await;
-            (runtime.config.local_host.clone(), runtime.config.local_port)
-        };
-        let proto = probe_service_proto(&host, port).await;
-        let mut runtime = entry.lock().await;
-        if matches!(
-            runtime.status,
-            TunnelStatus::Running | TunnelStatus::Starting
-        ) {
-            runtime.service_proto = Some(proto);
-            runtime.push_log(format!("service protocol detected: {proto}"));
+/// Probe a running tunnel's local service on explicit request and record the
+/// detected protocol on the runtime. The tunnel is re-checked after the
+/// network round-trip so a stop or retarget in the meantime is not overwritten.
+pub(crate) async fn detect_tunnel_service(
+    entry: &Arc<Mutex<TunnelRuntime>>,
+) -> Result<ServiceProto, StateError> {
+    let (host, port) = {
+        let runtime = entry.lock().await;
+        if runtime.status != TunnelStatus::Running {
+            return Err(conflict("tunnel must be running to detect its service"));
         }
-    });
+        (runtime.config.local_host.clone(), runtime.config.local_port)
+    };
+    let proto = probe_service_proto(&host, port).await;
+    let mut runtime = entry.lock().await;
+    if runtime.status != TunnelStatus::Running
+        || runtime.config.local_host != host
+        || runtime.config.local_port != port
+    {
+        return Err(conflict(
+            "tunnel changed while its service was being detected",
+        ));
+    }
+    runtime.service_proto = Some(proto);
+    runtime.push_log(format!("service protocol detected: {proto}"));
+    Ok(proto)
 }
 
 #[cfg(test)]

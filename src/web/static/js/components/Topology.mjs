@@ -15,9 +15,10 @@ export function Topology({ tunnel, rateIn, rateOut }) {
     : t('topo.assigning');
   const localAddress = `${tunnel.config.local_host}:${tunnel.config.local_port}`;
 
-  // The console fingerprints the forwarded service on start. Only browser-
-  // openable protocols get a link (with the right scheme); ssh/tcp and
-  // undetected services render as inert text so clicks never dead-end.
+  // The console fingerprints the forwarded service when the user asks for it
+  // (the detect action on the card). Only browser-openable protocols get a
+  // link (with the right scheme); ssh/tcp and undetected services render as
+  // inert text so clicks never dead-end.
   const proto = tunnel.service_proto || null;
   const scheme = proto === 'https' ? 'https' : 'http';
   const linkable = proto === 'http' || proto === 'https';

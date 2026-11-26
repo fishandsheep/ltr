@@ -15,6 +15,7 @@ const packageNames = [
   "ltr",
   "ltr-darwin-arm64",
   "ltr-linux-x64-musl",
+  "ltr-linux-arm64-gnu",
   "ltr-win32-x64-msvc"
 ];
 

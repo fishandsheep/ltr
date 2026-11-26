@@ -6,19 +6,25 @@ const path = require("path");
 
 const packages = {
   "darwin arm64": "@qinshower/ltr-darwin-arm64",
-  "linux x64": "@qinshower/ltr-linux-x64-musl",
+  "linux x64 musl": "@qinshower/ltr-linux-x64-musl",
+  "linux arm64 glibc": "@qinshower/ltr-linux-arm64-gnu",
   "win32 x64": "@qinshower/ltr-win32-x64-msvc"
 };
 
 function selectedPackage() {
   const key = `${process.platform} ${process.arch}`;
-  const value = packages[key];
+  let value;
 
-  if (typeof value !== "string") {
-    return null;
+  if (process.platform === "linux" && process.arch === "x64") {
+    value = packages["linux x64 musl"];
+  } else if (process.platform === "linux" && process.arch === "arm64") {
+    const glibcVersion = process.report?.getReport?.().header?.glibcVersionRuntime;
+    value = glibcVersion ? packages["linux arm64 glibc"] : null;
+  } else {
+    value = packages[key];
   }
 
-  return value;
+  return typeof value === "string" ? value : null;
 }
 
 function packageBinary(packageName) {

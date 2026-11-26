@@ -1,6 +1,6 @@
 # @qinshower/ltr
 
-通过 npm 或 Bun 执行 LTR 预编译二进制；支持 Node.js LTS 与 Bun 1.x。
+通过 npm 或 Bun 执行 LTR 预编译二进制；支持 Node.js LTS 与 Bun 1.x。预编译平台包括 macOS ARM64、Linux x64 musl、Linux ARM64 glibc 和 Windows x64。
 
 ## 安装
 
@@ -40,13 +40,13 @@ npx @qinshower/ltr -- -w
 远端公开 Web 管理台：
 
 ```sh
-npx @qinshower/ltr web --remote --to your-server.com --port 7836 --secret xxx
+LTR_SECRET=xxx npx @qinshower/ltr web --remote --to your-server.com --port 7836
 ```
 
 `home` 组合模式：
 
 ```sh
-npx @qinshower/ltr bundle --to your-server.com --secret xxx
+LTR_SECRET=xxx npx @qinshower/ltr bundle --to your-server.com
 ```
 
 远程 Web 模式会生成并持久化 HTTPS 证书与 Bearer token；启动时会打印 token。浏览器登录后 token 只保存在 session storage，不会放入 URL。

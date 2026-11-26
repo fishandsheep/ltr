@@ -8,7 +8,7 @@ LTR is a Rust 2021 TCP tunnel and Web control plane, independently forked from
 ekzhang/bore and now fully diverged.
 
 - crates/ltr-protocol: frozen null-delimited JSON framing and protocol messages.
-- crates/ltr-relay: authentication, plaintext/TLS transport with auto-negotiation,
+- crates/ltr-relay: authentication, TLS transport (plaintext only with explicit --no-tls),
   client, server, and relay lifecycle (including per-tunnel traffic counters).
 - src/: ltr-cli command parsing, orchestration, and the embedded Web control plane.
 - src/web/session.rs (API types), registry.rs (tunnel registry + TOML persistence),
@@ -21,7 +21,7 @@ ekzhang/bore and now fully diverged.
   key-parity.
 - tests/: protocol, authentication, transport/TLS, Web API, and end-to-end
   behaviour tests.
-- npm/ltr*: canonical npm/Bun launcher and 3 platform packages.
+- npm/ltr*: canonical npm/Bun launcher and 4 platform packages (macOS arm64, Linux x64 musl, Linux arm64 glibc, Windows x64).
 - ci/ and .github/workflows/: cross-compilation and release automation.
 - PRODUCT.md and DESIGN.md: Web product and design references.
 
@@ -80,11 +80,11 @@ LTR clients. Do not reintroduce compatibility wrappers.
 
 - Never print, trace, serialize, or include secret values in errors. HMAC secrets,
   Web bearer tokens, and private keys must be redacted in Debug output.
-- TLS is the default on both ends; the server auto-detects TLS vs plaintext per
-  connection. There is no flag that skips certificate validation. TOFU fingerprint
-  mismatch fails hard with reset instructions — never add a bypass.
-- Tunnel TLS negotiation falls back to plaintext only on message-framing errors;
-  certificate-trust failures must never fall back.
+- TLS is the default on both ends. A TLS-enabled server accepts only TLS; plaintext
+  requires explicit `--no-tls` on both ends. There is no flag that skips certificate
+  validation. TOFU fingerprint mismatch fails hard with reset instructions — never
+  add a bypass.
+- Tunnel clients never fall back to plaintext after a failed TLS handshake.
 - Web console binds loopback by default; remote/bundle modes require loopback
   web-addr and bearer-token authentication.
 - Persisted files (tunnels.toml, known_hosts) are written atomically with 0600

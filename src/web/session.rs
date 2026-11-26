@@ -286,6 +286,13 @@ pub(crate) fn not_found(message: impl Into<String>) -> StateError {
     }
 }
 
+pub(crate) fn internal(message: impl Into<String>) -> StateError {
+    StateError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: message.into(),
+    }
+}
+
 pub(crate) fn conflict(message: impl Into<String>) -> StateError {
     StateError {
         status: StatusCode::CONFLICT,

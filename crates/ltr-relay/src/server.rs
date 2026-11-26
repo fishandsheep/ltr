@@ -75,7 +75,7 @@ impl Server {
         self.bind_tunnels = bind_tunnels;
     }
 
-    /// Enable optional TLS while preserving plaintext auto-detection.
+    /// Enable TLS on the control port. Once set, plaintext peers are rejected.
     pub fn set_tls(&mut self, tls: ServerTlsConfig) {
         self.tls = Some(tls);
     }
@@ -97,7 +97,7 @@ impl Server {
         let listener = TcpListener::bind((this.bind_addr, CONTROL_PORT)).await?;
         info!(addr = ?this.bind_addr, "server listening");
         if this.auth.is_none() {
-            warn!("server authentication is disabled; use --secret for a restricted relay");
+            warn!("server authentication is disabled; set LTR_SECRET or `ltr conf set secret` for a restricted relay");
         }
         if let Some(on_ready) = on_ready {
             on_ready();

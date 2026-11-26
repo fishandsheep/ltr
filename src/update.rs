@@ -109,6 +109,7 @@ impl ArchiveFormat {
 fn release_target(os: &str, arch: &str) -> Option<(&'static str, ArchiveFormat)> {
     match (os, arch) {
         ("linux", "x86_64") => Some(("x86_64-unknown-linux-musl", ArchiveFormat::TarGz)),
+        ("linux", "aarch64") => Some(("aarch64-unknown-linux-gnu", ArchiveFormat::TarGz)),
         ("macos", "aarch64") => Some(("aarch64-apple-darwin", ArchiveFormat::TarGz)),
         ("windows", "x86_64") => Some(("x86_64-pc-windows-msvc", ArchiveFormat::Zip)),
         _ => None,
@@ -410,8 +411,11 @@ mod tests {
             release_target("linux", "x86_64"),
             Some(("x86_64-unknown-linux-musl", ArchiveFormat::TarGz))
         );
+        assert_eq!(
+            release_target("linux", "aarch64"),
+            Some(("aarch64-unknown-linux-gnu", ArchiveFormat::TarGz))
+        );
         assert_eq!(release_target("macos", "x86_64"), None);
-        assert_eq!(release_target("linux", "aarch64"), None);
         assert_eq!(release_target("freebsd", "x86_64"), None);
     }
 

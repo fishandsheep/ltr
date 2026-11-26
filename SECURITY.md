@@ -2,13 +2,13 @@
 
 ## Scope and threat model
 
-LTR forwards arbitrary TCP bytes. Plaintext is the default for Bore v1 compatibility, so anyone able to observe the network can read or alter tunnel payloads unless tunnel TLS or an external secure network is used. HMAC authentication proves knowledge of the shared Secret during the control handshake; it does not encrypt payloads.
+LTR forwards arbitrary TCP bytes. TLS is the default on both ends, but `--no-tls` (for relays without TLS, set explicitly on both ends) sends tunnel payloads in plaintext, so anyone able to observe the network can read or alter them unless tunnel TLS or an external secure network is used. HMAC authentication proves knowledge of the shared Secret during the control handshake; it does not encrypt payloads.
 
 The Web console is a separate administrative surface. Local Web mode binds to loopback by default. Remote Web mode uses HTTPS before traffic enters the tunnel and requires a separate bearer token for every `/api/*` request.
 
 ## Secure deployment
 
-- Set a strong `--secret` on both server and clients.
+- Set a strong secret on both server and clients via `LTR_SECRET` or `ltr conf set secret` (secrets are not accepted as command-line flags, since argv is visible to other local users).
 - Bind control and tunnel listeners only to intended interfaces.
 - Use tunnel TLS with an explicit CA or pinned certificate fingerprint when payload confidentiality is required.
 - In remote Web mode, keep the bearer token private and prefer an explicit PEM certificate/key for production.

@@ -41,10 +41,16 @@ impl TunnelRegistry {
         entry
     }
 
-    /// Remove a tunnel by id, returning whether the identity key matched.
-    pub(crate) fn remove(&mut self, id: &str, identity_key: &IdentityKey) -> bool {
+    /// Remove a tunnel by id. The identity key is released only when this id owns it.
+    pub(crate) fn remove(&mut self, id: &str, identity_key: &IdentityKey) {
         self.entries.remove(id);
-        self.identities.remove(identity_key).is_some()
+        if self
+            .identities
+            .get(identity_key)
+            .is_some_and(|owner| owner.as_str() == id)
+        {
+            self.identities.remove(identity_key);
+        }
     }
 }
 
@@ -88,16 +94,18 @@ pub(crate) fn config_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Load persisted user tunnels; system tunnels and invalid entries are
-/// skipped. Missing or unreadable files yield an empty set.
-pub(crate) fn load_persisted(path: &Path) -> Vec<(String, TunnelConfig, String)> {
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return Vec::new();
+/// Load persisted user tunnels. A missing file yields an empty set; any other
+/// read or parse failure is returned so the caller never overwrites a file it
+/// could not understand.
+pub(crate) fn load_persisted(path: &Path) -> std::io::Result<Vec<(String, TunnelConfig, String)>> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
     };
-    let Ok(parsed) = toml::from_str::<PersistedTunnels>(&contents) else {
-        return Vec::new();
-    };
-    parsed
+    let parsed = toml::from_str::<PersistedTunnels>(&contents)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string()))?;
+    Ok(parsed
         .tunnels
         .into_iter()
         .map(|entry| {
@@ -108,7 +116,22 @@ pub(crate) fn load_persisted(path: &Path) -> Vec<(String, TunnelConfig, String)>
             };
             (entry.id, TunnelConfig::from(entry.config), created_at)
         })
-        .collect()
+        .collect())
+}
+
+/// Copy an unreadable or partially-invalid tunnels file aside before LTR
+/// rewrites it, so no user definition is lost silently. Returns the backup path.
+pub(crate) fn backup_store(path: &Path) -> std::io::Result<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    // The UUID keeps backups unique even when two land in the same millisecond.
+    name.push(format!(".bak-{stamp}-{}", uuid::Uuid::new_v4()));
+    let backup = path.with_file_name(name);
+    std::fs::copy(path, &backup)?;
+    Ok(backup)
 }
 
 /// Atomically persist user tunnels (tmp file + rename, 0600 permissions).
@@ -168,9 +191,41 @@ pub(crate) fn runtime_from_persisted(
 }
 
 /// Validate a persisted config before it enters the registry, using the same
-/// rules as the web API (persistence never weakens them).
+/// rules as the web API for the current session mode (persistence never
+/// weakens them).
 pub(crate) fn validate_persisted(
     config: &TunnelConfig,
+    loopback_only: bool,
 ) -> Result<TunnelConfig, super::session::StateError> {
-    normalize_config(config.clone(), false)
+    normalize_config(config.clone(), loopback_only)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> IdentityKey {
+        (
+            "127.0.0.1".to_string(),
+            3000,
+            "example.com".to_string(),
+            Some(9000),
+        )
+    }
+
+    #[test]
+    fn remove_releases_identity_only_for_its_owner() {
+        let mut registry = TunnelRegistry::default();
+        registry.identities.insert(key(), "owner".to_string());
+
+        // A stale id must not release a key that a different tunnel owns.
+        registry.remove("stale", &key());
+        assert_eq!(
+            registry.identities.get(&key()).map(String::as_str),
+            Some("owner")
+        );
+
+        registry.remove("owner", &key());
+        assert!(!registry.identities.contains_key(&key()));
+    }
 }

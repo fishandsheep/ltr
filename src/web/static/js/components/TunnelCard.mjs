@@ -19,6 +19,7 @@ export function TunnelCard({
   logsBusy,
   onStart,
   onStop,
+  onDetect,
   onEdit,
   onDelete,
   onToggleLogs,
@@ -47,6 +48,9 @@ export function TunnelCard({
             : ''}
           ${status === 'running' || status === 'starting'
             ? html`<button class="btn btn-plain mini" onClick=${onStop}>${t('action.stop')}</button>`
+            : ''}
+          ${status === 'running'
+            ? html`<button class="btn btn-plain mini" onClick=${onDetect}>${t('action.detect')}</button>`
             : ''}
           <button class="btn btn-plain mini" onClick=${onToggleLogs}>
             ${t('action.logs')}${logsOpen ? ' ▴' : ' ▾'}

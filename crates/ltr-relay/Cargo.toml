@@ -1,6 +1,6 @@
 [package]
 name = "ltr-relay"
-version = "0.1.1"
+version = "0.1.2"
 license = "MIT"
 description = "Relay, client, server, authentication, and transport layers for LTR."
 repository = "https://github.com/fishandsheep/ltr"
@@ -10,6 +10,7 @@ rust-version = "1.85"
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
+aws-lc-rs = "1.18.0"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 dashmap = "6.2.1"
 fs2 = "0.4.3"
@@ -29,4 +30,4 @@ tokio-rustls = "0.26.4"
 tokio-util = { version = "0.7.18", features = ["codec"] }
 tracing = "0.1.44"
 uuid = { version = "1.23.4", features = ["serde", "v4"] }
-ltr-protocol = { version = "0.1.1", path = "../ltr-protocol" }
+ltr-protocol = { version = "0.1.2", path = "../ltr-protocol" }

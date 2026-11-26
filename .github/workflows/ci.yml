@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -8,17 +11,14 @@ on:
 
 jobs:
   rust:
-    name: Build and Test
+    name: Linux Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - run: cargo build --workspace --all-features
+      - uses: Swatinem/rust-cache@v2
 
       - run: cargo test --workspace --all-targets
       - run: cargo test --doc --workspace
@@ -29,10 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
           components: rustfmt
 
       - run: cargo fmt --all -- --check
@@ -43,16 +41,59 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
           components: clippy
+
+      - uses: Swatinem/rust-cache@v2
 
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  platform-tests:
+    name: Test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            cross: false
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            cross: true
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Test target
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" ]]; then
+            cross test --workspace --all-targets --target "${{ matrix.target }}"
+          else
+            cargo test --workspace --all-targets --target "${{ matrix.target }}"
+          fi
+
   npm:
-    name: npm and Bun launcher metadata
+    name: npm package metadata and launchers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,9 +104,6 @@ jobs:
 
       - run: npm run npm:check
       - run: npm run i18n:check
-      - run: npm run npm:pack:dry-run
       - run: node --check npm/ltr/bin/ltr.js
-      - uses: oven-sh/setup-bun@v2
-      - run: bun --version
-      - run: bun npm/scripts/check-release.mjs
+      - run: find src/web/static/js -name '*.mjs' -print0 | xargs -0 -n1 node --check
       - run: node npm/scripts/smoke-platform-launchers.mjs

@@ -205,6 +205,7 @@ export default function App() {
                   logsBusy=${logsOpen[item.id] && !logsCache[item.id]}
                   onStart=${() => act(() => api.startTunnel(item.id))}
                   onStop=${() => act(() => api.stopTunnel(item.id))}
+                  onDetect=${() => act(() => api.detectTunnel(item.id))}
                   onEdit=${() => setEditing(item)}
                   onDelete=${() => setDeleting(item)}
                   onToggleLogs=${() => {

@@ -7,6 +7,7 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 const targets = [
   ["aarch64-apple-darwin", "ltr-darwin-arm64", "ltr"],
   ["x86_64-unknown-linux-musl", "ltr-linux-x64-musl", "ltr"],
+  ["aarch64-unknown-linux-gnu", "ltr-linux-arm64-gnu", "ltr"],
   ["x86_64-pc-windows-msvc", "ltr-win32-x64-msvc", "ltr.exe"]
 ];
 

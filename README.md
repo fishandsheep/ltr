@@ -21,7 +21,7 @@ npx @qinshower/ltr
 cargo install ltr-cli
 ```
 
-独立二进制和 SHA-256 校验和见 [Releases](https://github.com/fishandsheep/ltr/releases)。
+独立二进制和 SHA-256 校验和见 [Releases](https://github.com/fishandsheep/ltr/releases)。预编译包覆盖 Linux x86_64（静态 musl，可运行于 glibc）、Linux ARM64（glibc ≥ 2.35）、macOS ARM64 与 Windows x86_64；其他目标可通过 `cargo install ltr-cli` 从源码安装。
 
 ## 快速开始
 
@@ -39,13 +39,13 @@ ltr
 在服务器上启动中继：
 
 ```sh
-ltr server --secret change-me
+LTR_SECRET=change-me ltr server
 ```
 
 不开控制台、直接命令行暴露本地端口（裸端口即 127.0.0.1）：
 
 ```sh
-ltr 8000 -t your-server.example --secret change-me
+LTR_SECRET=change-me ltr 8000 -t your-server.example
 ltr 192.168.1.5:8000 -t your-server.example -p 9000   # 指定本地地址与远程端口
 ```
 
@@ -57,7 +57,7 @@ ltr 192.168.1.5:8000 -t your-server.example -p 9000   # 指定本地地址与远
 - **客户端**默认走 TLS，首次连接记录服务器证书指纹（TOFU，类似 SSH 的
   `known_hosts`，存储在 `~/.config/ltr/known_hosts`）。之后指纹变化将硬失败并提示
   如何重置——没有跳过校验的选项。
-- 同一个控制端口同时接受 TLS 与明文连接，按连接自动识别。
+- 服务端启用 TLS 后只接受 TLS 连接，明文客户端会被拒绝。需要明文时，两端都显式使用 `--no-tls`。
 
 显式信任方式仍然可用：
 

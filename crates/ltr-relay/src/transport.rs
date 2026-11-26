@@ -1,8 +1,8 @@
 //! Plaintext and optional TLS adapters for the shared tunnel control port.
 //!
 //! The transport interface is deliberately small: callers connect or accept a
-//! boxed asynchronous stream, while this module owns TLS negotiation,
-//! certificate parsing, and the legacy plaintext fallback.
+//! boxed asynchronous stream, while this module owns TLS negotiation and
+//! certificate parsing. Once TLS is configured, plaintext peers are rejected.
 
 use std::{
     fs::{self, File},
@@ -31,12 +31,6 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::shared::{configure_tcp_stream, NETWORK_TIMEOUT};
 
-/// How long the server waits for the client's first byte before deciding a
-/// silent peer is a plaintext client waiting for the authentication
-/// challenge. TLS clients send their ClientHello immediately, so only
-/// server-speaks-first plaintext flows hit this window.
-const PLAINTEXT_QUIET_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// A stream accepted by the tunnel protocol, either plaintext or TLS-wrapped.
 pub trait AsyncStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
 
@@ -50,10 +44,6 @@ pub type BoxedStream = Box<dyn AsyncStream>;
 pub struct ClientTlsConfig {
     connector: TlsConnector,
     server_name: ServerName<'static>,
-    /// True when the connection must remain TLS (explicit CA or fingerprint,
-    /// or a TLS identity already learned for this host). A TLS handshake
-    /// failure in that case never downgrades to plaintext.
-    tls_required: Arc<std::sync::atomic::AtomicBool>,
     /// Human-readable note set when a TOFU verifier trusts a fingerprint for
     /// the first time, so callers can surface it in logs.
     trust_note: Arc<Mutex<Option<String>>>,
@@ -134,14 +124,6 @@ pub fn load_client_tls(
     let trust_note = Arc::new(Mutex::new(None));
     let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()?;
-    let tls_required = Arc::new(std::sync::atomic::AtomicBool::new(
-        ca_path.is_some() || fingerprint.is_some() || {
-            let store_path = tofu_store_path
-                .map(PathBuf::from)
-                .unwrap_or_else(default_known_hosts_path);
-            known_hosts_load(&store_path)?.contains_key(tofu_host)
-        },
-    ));
     let client_config = if let Some(ca_path) = ca_path {
         let roots = root_store(ca_path)?;
         let builder = builder.with_root_certificates(roots);
@@ -177,7 +159,6 @@ pub fn load_client_tls(
             store_path,
             provider: Arc::clone(&provider),
             trust_note: Arc::clone(&trust_note),
-            tls_required: Arc::clone(&tls_required),
         };
         let builder = builder
             .dangerous()
@@ -193,7 +174,6 @@ pub fn load_client_tls(
     Ok(ClientTlsConfig {
         connector: TlsConnector::from(Arc::new(client_config)),
         server_name,
-        tls_required,
         trust_note,
     })
 }
@@ -316,99 +296,38 @@ pub async fn connect(to: &str, port: u16, tls: Option<&ClientTlsConfig>) -> Resu
 
     match tls {
         Some(tls) => {
-            let stream = timeout(
+            let handshake = timeout(
                 NETWORK_TIMEOUT,
                 tls.connector.connect(tls.server_name.clone(), stream),
             )
             .await
-            .context("timed out during TLS handshake")??;
+            .context("timed out during TLS handshake")?;
+            let stream = handshake.map_err(tls_handshake_error)?;
             Ok(Box::new(stream))
         }
         None => Ok(Box::new(stream)),
     }
 }
 
-/// Connect with TLS-first negotiation: try TLS unless the caller already
-/// knows the peer is plaintext-only, and fall back to plaintext when the
-/// peer clearly does not speak TLS. Certificate-trust failures never fall
-/// back; only message-framing errors do.
-pub async fn connect_negotiated(
-    to: &str,
-    port: u16,
-    tls: Option<&ClientTlsConfig>,
-    plaintext_peer: &std::sync::atomic::AtomicBool,
-) -> Result<BoxedStream> {
-    let Some(tls) = tls else {
-        return connect(to, port, None).await;
+/// Wraps a failed TLS handshake. Only failures a non-TLS peer could cause get
+/// the `--no-tls` hint. Certificate and trust failures never do: their cause is
+/// the trust decision, not the transport mode.
+fn tls_handshake_error(err: std::io::Error) -> anyhow::Error {
+    let trust_failure = err
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+        .is_some_and(|tls| {
+            matches!(
+                tls,
+                rustls::Error::InvalidCertificate(_) | rustls::Error::General(_)
+            )
+        });
+    let context = if trust_failure {
+        "TLS handshake failed"
+    } else {
+        "TLS handshake failed; if the relay runs without TLS, pass --no-tls"
     };
-    if plaintext_peer.load(std::sync::atomic::Ordering::Relaxed) {
-        return connect(to, port, None).await;
-    }
-
-    let stream = tcp_connect(to, port).await?;
-    match timeout(
-        NETWORK_TIMEOUT,
-        tls.connector.connect(tls.server_name.clone(), stream),
-    )
-    .await
-    .context("timed out during TLS handshake")?
-    {
-        Ok(stream) => {
-            tls.tls_required
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            Ok(Box::new(stream))
-        }
-        Err(err)
-            if tls
-                .tls_required
-                .load(std::sync::atomic::Ordering::Relaxed) =>
-        {
-            Err(err).context("TLS handshake failed; this server is pinned to TLS and will not fall back to plaintext")
-        }
-        Err(err) if is_non_tls_peer_error(&err) => {
-            // The latch is permanent for this client: once a peer proves
-            // itself non-TLS, later connections skip TLS entirely. Say so —
-            // a silent permanent downgrade deserves a log line.
-            tracing::warn!(
-                error = %err,
-                "peer is not speaking TLS; falling back to plaintext for this process"
-            );
-            plaintext_peer.store(true, std::sync::atomic::Ordering::Relaxed);
-            connect(to, port, None).await
-        }
-        Err(err) => Err(err).context("TLS handshake failed"),
-    }
-}
-
-/// True when a TLS handshake error indicates the peer responded with
-/// non-TLS bytes or closed the connection (legacy plaintext servers reject
-/// the ClientHello by hanging up), rather than a certificate-trust failure.
-fn is_non_tls_peer_error(err: &std::io::Error) -> bool {
-    fn chain_has_framing_error(start: &(dyn std::error::Error + 'static)) -> bool {
-        let mut source = Some(start);
-        while let Some(current) = source {
-            // Framing errors mean the peer answered with non-TLS bytes; trust
-            // failures (certificate errors) must NOT fall back to plaintext.
-            if let Some(rustls_err) = current.downcast_ref::<rustls::Error>() {
-                if matches!(rustls_err, rustls::Error::InvalidMessage(_)) {
-                    return true;
-                }
-            }
-            source = current.source();
-        }
-        false
-    }
-
-    // tokio-rustls wraps the rustls error as the io::Error's inner payload;
-    // io::Error::source() skips over the inner error itself, so inspect
-    // get_ref() explicitly before walking the source chain.
-    if let Some(inner) = err.get_ref() {
-        let inner: &(dyn std::error::Error + 'static) = inner;
-        if chain_has_framing_error(inner) {
-            return true;
-        }
-    }
-    chain_has_framing_error(err)
+    anyhow::Error::new(err).context(context)
 }
 
 async fn tcp_connect(to: &str, port: u16) -> Result<TcpStream> {
@@ -420,42 +339,17 @@ async fn tcp_connect(to: &str, port: u16) -> Result<TcpStream> {
     Ok(stream)
 }
 
-/// Accept a server connection, auto-detecting a TLS ClientHello when TLS is
-/// configured. A peer that stays silent for the quiet window is treated as
-/// a plaintext client waiting for the server to speak first (the HMAC
-/// challenge flow), which repairs plaintext authentication over a
-/// TLS-enabled control port.
+/// Accept a control connection. With TLS configured the handshake is
+/// mandatory: plaintext peers are rejected rather than served.
 pub async fn accept(stream: TcpStream, tls: Option<&ServerTlsConfig>) -> Result<BoxedStream> {
     configure_tcp_stream(&stream).context("could not configure control connection")?;
     let Some(tls) = tls else {
         return Ok(Box::new(stream));
     };
-
-    let mut first_byte = [0u8; 1];
-    let peeked = timeout(PLAINTEXT_QUIET_WINDOW, stream.peek(&mut first_byte)).await;
-    match peeked {
-        // A byte arrived: classify TLS vs plaintext by record type.
-        Ok(Ok(_)) => {}
-        // Quiet window elapsed: treat as a plaintext peer waiting for the
-        // server to speak first.
-        Err(_elapsed) => {
-            return Ok(Box::new(stream));
-        }
-        Ok(Err(err)) => return Err(err).context("could not inspect tunnel transport"),
-    }
-
-    if looks_like_tls_record(first_byte[0]) {
-        let stream = timeout(NETWORK_TIMEOUT, tls.acceptor.accept(stream))
-            .await
-            .context("timed out during TLS handshake")??;
-        Ok(Box::new(stream))
-    } else {
-        Ok(Box::new(stream))
-    }
-}
-
-fn looks_like_tls_record(first_byte: u8) -> bool {
-    matches!(first_byte, 20..=23)
+    let stream = timeout(NETWORK_TIMEOUT, tls.acceptor.accept(stream))
+        .await
+        .context("timed out during TLS handshake")??;
+    Ok(Box::new(stream))
 }
 
 fn crypto_provider() -> Result<Arc<CryptoProvider>> {
@@ -740,7 +634,6 @@ struct TofuServerCertVerifier {
     store_path: PathBuf,
     provider: Arc<CryptoProvider>,
     trust_note: Arc<Mutex<Option<String>>>,
-    tls_required: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TofuServerCertVerifier {
@@ -787,11 +680,7 @@ impl ServerCertVerifier for TofuServerCertVerifier {
                     .collect::<String>();
                 Err(self.fingerprint_mismatch_error(expected_fingerprint, &hex))
             }
-            Some(_) => {
-                self.tls_required
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                Ok(ServerCertVerified::assertion())
-            }
+            Some(_) => Ok(ServerCertVerified::assertion()),
             None => {
                 // First use: persist the fingerprint, then pin it in memory so
                 // every later handshake in this process compares against it.
@@ -801,8 +690,6 @@ impl ServerCertVerifier for TofuServerCertVerifier {
                     )));
                 }
                 *expected = Some(actual);
-                self.tls_required
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 let hex = actual
                     .iter()
                     .map(|b| format!("{b:02x}"))
@@ -856,17 +743,9 @@ impl ServerCertVerifier for TofuServerCertVerifier {
 #[cfg(test)]
 mod tests {
     use super::{
-        known_hosts_load, known_hosts_store, looks_like_tls_record, parse_fingerprint,
-        parse_server_name, write_atomic_file,
+        known_hosts_load, known_hosts_store, parse_fingerprint, parse_server_name,
+        write_atomic_file,
     };
-
-    #[test]
-    fn detects_tls_record_types_without_reclassifying_json() {
-        assert!(looks_like_tls_record(22));
-        assert!(looks_like_tls_record(23));
-        assert!(!looks_like_tls_record(b'{'));
-        assert!(!looks_like_tls_record(b'['));
-    }
 
     #[test]
     fn parses_sha256_fingerprint_with_separators() {

@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::Serialize;
 
+use super::session::ServiceProto;
 use super::state::{SessionInfo, StateError, TunnelConfig, TunnelInfo, WebState};
 
 pub fn router() -> Router<WebState> {
@@ -18,6 +19,7 @@ pub fn router() -> Router<WebState> {
         .route("/tunnels/:id", put(update_tunnel).delete(delete_tunnel))
         .route("/tunnels/:id/start", post(start_tunnel))
         .route("/tunnels/:id/stop", post(stop_tunnel))
+        .route("/tunnels/:id/probe", post(detect_service))
         .route("/tunnels/:id/logs", get(get_logs))
 }
 
@@ -29,6 +31,11 @@ struct TunnelIdResponse {
 #[derive(Debug, Serialize)]
 struct AckResponse {
     ok: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ProbeResponse {
+    service_proto: ServiceProto,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,6 +70,14 @@ async fn start_tunnel(
 ) -> Result<Json<AckResponse>, ApiError> {
     state.start_tunnel(&id).await?;
     Ok(Json(AckResponse { ok: true }))
+}
+
+async fn detect_service(
+    State(state): State<WebState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProbeResponse>, ApiError> {
+    let service_proto = state.detect_service(&id).await?;
+    Ok(Json(ProbeResponse { service_proto }))
 }
 
 async fn update_tunnel(

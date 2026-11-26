@@ -58,6 +58,7 @@ export const api = {
   deleteTunnel: (id) => request(`/api/tunnels/${id}`, { method: 'DELETE' }),
   startTunnel: (id) => request(`/api/tunnels/${id}/start`, { method: 'POST' }),
   stopTunnel: (id) => request(`/api/tunnels/${id}/stop`, { method: 'POST' }),
+  detectTunnel: (id) => request(`/api/tunnels/${id}/probe`, { method: 'POST' }),
   tunnelLogs: (id) => request(`/api/tunnels/${id}/logs`),
 };
 

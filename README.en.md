@@ -21,7 +21,7 @@ npx @qinshower/ltr
 cargo install ltr-cli
 ```
 
-Standalone binaries and SHA-256 checksums are on the [Releases](https://github.com/fishandsheep/ltr/releases) page.
+Standalone binaries and SHA-256 checksums are on the [Releases](https://github.com/fishandsheep/ltr/releases) page. Prebuilt packages cover Linux x86_64 (static musl, also runs on glibc), Linux arm64 (glibc ≥ 2.35), macOS arm64, and Windows x86_64; other targets can install from source with `cargo install ltr-cli`.
 
 ## Quick start
 
@@ -39,13 +39,13 @@ Every command runs in the background by default: it prints its startup summary a
 Start a relay on your server:
 
 ```sh
-ltr server --secret change-me
+LTR_SECRET=change-me ltr server
 ```
 
 Expose a local port without the console (a bare port means 127.0.0.1):
 
 ```sh
-ltr 8000 -t your-server.example --secret change-me
+LTR_SECRET=change-me ltr 8000 -t your-server.example
 ltr 192.168.1.5:8000 -t your-server.example -p 9000   # explicit local address and remote port
 ```
 
@@ -58,7 +58,7 @@ Since 0.1.0 encryption needs no flags:
 - The **client** uses TLS by default and records the server certificate fingerprint on
   first use (TOFU, like SSH `known_hosts`, stored at `~/.config/ltr/known_hosts`).
   A changed fingerprint fails hard with reset instructions — there is no skip option.
-- One control port accepts both TLS and plaintext, auto-detected per connection.
+- A TLS-enabled server accepts only TLS connections; plaintext clients are rejected. For plaintext, pass `--no-tls` on both ends explicitly.
 
 Explicit trust is still available:
 
