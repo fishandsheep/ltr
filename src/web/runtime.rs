@@ -27,7 +27,6 @@ impl From<SystemTunnelRole> for TunnelRole {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct TunnelRuntime {
     pub(crate) id: String,
     pub(crate) config: TunnelConfig,
@@ -36,6 +35,9 @@ pub(crate) struct TunnelRuntime {
     pub(crate) error: Option<String>,
     pub(crate) kind: TunnelKind,
     pub(crate) role: TunnelRole,
+    /// Whether this definition originated as a user tunnel and stays persisted
+    /// even while temporarily adopted by a managed system tunnel.
+    pub(crate) persisted_user: bool,
     pub(crate) locked: bool,
     pub(crate) display_url: Option<String>,
     pub(crate) created_at: String,
@@ -46,6 +48,35 @@ pub(crate) struct TunnelRuntime {
     pub(crate) max_log_lines: usize,
     pub(crate) stats: TunnelStatsSnapshot,
     pub(crate) service_proto: Option<ServiceProto>,
+}
+
+impl std::fmt::Debug for TunnelRuntime {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TunnelRuntime")
+            .field("id", &self.id)
+            .field("config", &self.config)
+            .field("status", &self.status)
+            .field("remote_port", &self.remote_port)
+            .field("error", &self.error)
+            .field("kind", &self.kind)
+            .field("role", &self.role)
+            .field("persisted_user", &self.persisted_user)
+            .field("locked", &self.locked)
+            .field("display_url", &self.display_url)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("logs", &self.logs)
+            .field("max_log_lines", &self.max_log_lines)
+            .field("stats", &self.stats)
+            .field("service_proto", &self.service_proto)
+            .field(
+                "shutdown_tx",
+                &self.shutdown_tx.as_ref().map(|_| "[active]"),
+            )
+            .field("handle", &self.handle.as_ref().map(|_| "[active]"))
+            .finish()
+    }
 }
 
 impl TunnelRuntime {

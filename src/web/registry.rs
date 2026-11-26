@@ -135,21 +135,7 @@ pub(crate) fn save_persisted(
         std::fs::create_dir_all(parent)?;
     }
 
-    let tmp = path.with_extension("toml.tmp");
-    write_private(&tmp, contents.as_bytes())?;
-    std::fs::rename(&tmp, path)
-}
-
-fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, contents)
+    crate::atomic_file::write_atomic(path, contents.as_bytes(), Some(0o600))
 }
 
 /// Rehydrate a persisted user tunnel as a fresh runtime.
@@ -167,6 +153,7 @@ pub(crate) fn runtime_from_persisted(
         error: None,
         kind: TunnelKind::User,
         role: TunnelRole::User,
+        persisted_user: true,
         locked: false,
         display_url: None,
         created_at: created_at.clone(),

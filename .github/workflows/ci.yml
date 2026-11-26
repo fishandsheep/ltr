@@ -21,6 +21,7 @@ jobs:
       - run: cargo build --workspace --all-features
 
       - run: cargo test --workspace --all-targets
+      - run: cargo test --doc --workspace
 
   rustfmt:
     name: Rustfmt

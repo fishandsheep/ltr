@@ -13,12 +13,12 @@ use axum::{
 };
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 pub use ltr_relay::OnReady;
+use serde_json::json;
+use tokio::{net::TcpListener, sync::oneshot};
 
 /// Callback fired with the bound console address once a web mode finishes
 /// startup.
 pub type OnReadyAddr = Box<dyn FnOnce(SocketAddr) + Send>;
-use serde_json::json;
-use tokio::{net::TcpListener, sync::oneshot};
 
 /// HTTP API routes and handlers.
 pub mod api;
@@ -33,12 +33,12 @@ pub mod state;
 pub mod tunnel;
 
 pub use state::{
-    default_tunnels_path, is_loopback_host, SessionInfo, SessionMode, StateError, SystemTunnelRole,
-    SystemTunnelSpec, TunnelConfig, TunnelInfo, TunnelKind, TunnelStatus, WebLimits, WebState,
-    WebTlsConfig,
+    default_tunnels_path, SessionInfo, SessionMode, StateError, SystemTunnelRole, SystemTunnelSpec,
+    TunnelConfig, TunnelInfo, TunnelKind, TunnelStatus, WebLimits, WebState, WebTlsConfig,
 };
 
 const INDEX_HTML: &str = include_str!("static/index.html");
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 const STYLE_CSS: &str = include_str!("static/style.css");
 
 /// Embedded static asset: request path under `/js/` and MIME type.
@@ -134,11 +134,6 @@ impl BoundWebListener {
 
 /// Starts local web console server.
 pub async fn serve(config: ServeConfig) -> Result<()> {
-    if !config.addr.ip().is_loopback() {
-        eprintln!(
-            "WARNING: Web console is exposed on a non-loopback address without Web authentication."
-        );
-    }
     let state = WebState::new(config.session.clone());
     serve_with_state(config, state, tokio::signal::ctrl_c()).await
 }
@@ -151,8 +146,8 @@ where
     serve_with_state_on_ready(config, state, shutdown, None).await
 }
 
-/// Like [`serve_with_state`], with a callback fired once the console listener
-/// is bound, receiving the bound address.
+/// Serves the web console on `config.addr` until `shutdown` resolves. The
+/// callback fires once the listener is bound, receiving the bound address.
 pub async fn serve_with_state_on_ready<S>(
     config: ServeConfig,
     state: WebState,
@@ -162,6 +157,7 @@ pub async fn serve_with_state_on_ready<S>(
 where
     S: Future<Output = std::result::Result<(), std::io::Error>> + Send + 'static,
 {
+    validate_web_bind(config.addr, &state)?;
     let bound = bind_web_listener(config.addr, state.web_tls()).await?;
     if let Some(on_ready) = on_ready {
         on_ready(bound.addr());
@@ -283,6 +279,7 @@ pub async fn run_managed_on_ready<S>(
 where
     S: Future<Output = ()> + Send + 'static,
 {
+    validate_web_bind(config.addr, &state)?;
     let bound = bind_web_listener(config.addr, state.web_tls()).await?;
     let web_port = bound.addr().port();
     let mut system_ids = Vec::with_capacity(system_tunnels.len());
@@ -356,6 +353,15 @@ where
     result
 }
 
+fn validate_web_bind(addr: SocketAddr, state: &WebState) -> Result<()> {
+    if !addr.ip().is_loopback() && !state.web_auth_enabled() {
+        return Err(anyhow!(
+            "Web console cannot bind to a non-loopback address without bearer-token authentication"
+        ));
+    }
+    Ok(())
+}
+
 /// Builds web console router.
 pub fn router(state: WebState) -> Router {
     let api = api::router().layer(middleware::from_fn_with_state(state.clone(), authorize_api));
@@ -370,6 +376,15 @@ pub fn router(state: WebState) -> Router {
 
 async fn authorize_api(State(state): State<WebState>, request: Request, next: Next) -> Response {
     if !state.web_auth_enabled() {
+        // Without a token, loopback is the only access control: refuse requests
+        // whose Host or Origin names another site (DNS rebinding, cross-site).
+        if !local_request_allowed(request.headers(), request.uri()) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "request must target a loopback host" })),
+            )
+                .into_response();
+        }
         return next.run(request).await;
     }
 
@@ -393,9 +408,64 @@ async fn authorize_api(State(state): State<WebState>, request: Request, next: Ne
     }
 }
 
+/// True when the `Host` and `Origin` headers, if present, name a loopback host.
+fn local_request_allowed(headers: &HeaderMap, uri: &axum::http::Uri) -> bool {
+    let uri_authority_ok = uri
+        .authority()
+        .is_none_or(|authority| is_loopback_authority(authority.as_str()));
+    let hosts = headers.get_all(header::HOST);
+    let mut hosts = hosts.iter();
+    let host_ok = hosts
+        .next()
+        .is_none_or(|value| value.to_str().is_ok_and(is_loopback_authority))
+        && hosts.next().is_none();
+
+    let origins = headers.get_all(header::ORIGIN);
+    let mut origins = origins.iter();
+    let origin_ok = origins.next().is_none_or(|value| {
+        value.to_str().ok().is_some_and(|origin| {
+            origin.parse::<axum::http::Uri>().is_ok_and(|uri| {
+                matches!(uri.scheme_str(), Some("http" | "https"))
+                    && uri
+                        .authority()
+                        .is_some_and(|authority| is_loopback_authority(authority.as_str()))
+            })
+        })
+    }) && origins.next().is_none();
+
+    uri_authority_ok && host_ok && origin_ok
+}
+
+/// Checks a parsed host against the loopback names.
+fn is_loopback_host(host: &str) -> bool {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Parses `Host` as an HTTP authority and accepts only loopback hosts.
+fn is_loopback_authority(authority: &str) -> bool {
+    authority
+        .parse::<axum::http::uri::Authority>()
+        .is_ok_and(|authority| {
+            !authority.as_str().contains('@') && is_loopback_host(authority.host())
+        })
+}
+
 async fn index() -> impl IntoResponse {
     (
-        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        [
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            (
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                CONTENT_SECURITY_POLICY,
+            ),
+        ],
         Html(INDEX_HTML),
     )
 }
@@ -454,9 +524,21 @@ async fn style_css(headers: HeaderMap) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_web_listener, state::WebTlsConfig, BoundWebListener};
+    use super::{bind_web_listener, state::WebTlsConfig, validate_web_bind, BoundWebListener};
+    use crate::web::{SessionInfo, WebState};
     use rcgen::generate_simple_self_signed;
     use tokio::net::TcpListener;
+
+    #[test]
+    fn non_loopback_web_bind_requires_authentication() {
+        let state = WebState::default();
+        let addr = "0.0.0.0:7836".parse().unwrap();
+        assert!(validate_web_bind(addr, &state).is_err());
+
+        let authenticated = WebState::with_web_token(SessionInfo::local(), Some("token".into()));
+        assert!(validate_web_bind(addr, &authenticated).is_ok());
+        assert!(validate_web_bind("127.0.0.1:7836".parse().unwrap(), &state).is_ok());
+    }
 
     #[tokio::test]
     async fn bind_web_listener_falls_back_when_requested_port_is_busy() {

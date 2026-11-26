@@ -52,6 +52,7 @@ pub struct TunnelConfig {
     pub to: String,
     pub port: Option<u16>,
     pub local_host: String,
+    #[serde(skip_serializing, default)]
     pub secret: Option<String>,
 }
 
@@ -105,7 +106,7 @@ impl TunnelConfig {
 }
 
 /// On-disk shape of a tunnel definition.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PersistedTunnelConfig {
     pub name: String,
     pub local_port: u16,
@@ -113,6 +114,20 @@ pub struct PersistedTunnelConfig {
     pub port: Option<u16>,
     pub local_host: String,
     pub secret: Option<String>,
+}
+
+impl fmt::Debug for PersistedTunnelConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PersistedTunnelConfig")
+            .field("name", &self.name)
+            .field("local_port", &self.local_port)
+            .field("to", &self.to)
+            .field("port", &self.port)
+            .field("local_host", &self.local_host)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 impl From<PersistedTunnelConfig> for TunnelConfig {
@@ -300,6 +315,11 @@ pub(crate) fn normalize_config(
     if config.to.is_empty() {
         return Err(bad_request("to cannot be empty"));
     }
+    if !valid_host(&config.to) {
+        return Err(bad_request(
+            "to must be a hostname or IP address, without a URL scheme or path",
+        ));
+    }
     if config.local_host.is_empty() {
         return Err(bad_request("local_host cannot be empty"));
     }
@@ -308,11 +328,33 @@ pub(crate) fn normalize_config(
             "remote web mode only allows loopback local_host targets",
         ));
     }
+    if !valid_host(&config.local_host) {
+        return Err(bad_request("local_host must be a hostname or IP address"));
+    }
     if matches!(config.port, Some(0)) {
         return Err(bad_request("port must be a valid port"));
     }
 
     Ok(config)
+}
+
+fn valid_host(host: &str) -> bool {
+    if host.is_empty()
+        || host.chars().any(char::is_whitespace)
+        || host.contains('/')
+        || host.contains('@')
+        || host.contains('#')
+        || host.contains('?')
+        || host.contains('[') != host.contains(']')
+    {
+        return false;
+    }
+    if host.starts_with('[') {
+        return host[1..host.len() - 1]
+            .parse::<IpAddr>()
+            .is_ok_and(|ip| ip.is_ipv6());
+    }
+    host.parse::<IpAddr>().is_ok() || !host.contains(':')
 }
 
 /// True when the host resolves to a loopback address literal.
@@ -330,4 +372,59 @@ pub(crate) fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_config, TunnelConfig};
+
+    fn config(to: &str) -> TunnelConfig {
+        TunnelConfig {
+            name: "test".to_string(),
+            local_port: 3000,
+            to: to.to_string(),
+            port: None,
+            local_host: "127.0.0.1".to_string(),
+            secret: None,
+        }
+    }
+
+    #[test]
+    fn tunnel_config_serialization_omits_secret_values() {
+        let mut config = config("relay.example");
+        config.secret = Some("relay-secret-value".to_string());
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(!serialized.contains("relay-secret-value"));
+        assert!(!serialized.contains("secret"));
+        let decoded: TunnelConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(decoded.secret, None);
+    }
+
+    #[test]
+    fn persisted_config_debug_redacts_secret_values() {
+        let config = config("relay.example").persisted();
+        let config = super::PersistedTunnelConfig {
+            secret: Some("relay-secret-value".to_string()),
+            ..config
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("relay-secret-value"));
+    }
+
+    #[test]
+    fn tunnel_hosts_accept_dns_and_ip_but_not_url_authorities() {
+        for host in ["relay.example", "127.0.0.1", "::1", "[::1]"] {
+            assert!(normalize_config(config(host), false).is_ok(), "host {host}");
+        }
+        for host in [
+            "https://relay.example",
+            "relay.example:7835",
+            "[relay.example]",
+        ] {
+            assert!(
+                normalize_config(config(host), false).is_err(),
+                "host {host}"
+            );
+        }
+    }
 }

@@ -34,10 +34,12 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 toml = "0.9"
 sha2 = "0.11.0"
+subtle = "2.6.1"
 # no-provider variant keeps the single (aws-lc-rs) rustls provider from the rest of the tree
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider"] }
 flate2 = "1.1"
 tar = "0.4"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 socket2 = "0.6.4"
 time = { version = "0.3.44", features = ["formatting"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "io-util", "macros", "net", "signal", "sync", "time"] }

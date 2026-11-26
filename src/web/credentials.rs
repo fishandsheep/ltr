@@ -1,11 +1,12 @@
 use std::{
     env, fs,
     io::ErrorKind,
+    net::IpAddr,
     path::{Path, PathBuf},
 };
 
 use anyhow::{bail, Context, Result};
-use rcgen::generate_simple_self_signed;
+use rcgen::{CertificateParams, KeyPair, SanType};
 use uuid::Uuid;
 
 use super::state::WebTlsConfig;
@@ -100,22 +101,41 @@ pub(crate) fn load_or_generate_tls(
                 });
             }
 
-            let names = vec![server_host.to_string(), "localhost".to_string()];
-            let generated = generate_simple_self_signed(names)
+            let mut params = CertificateParams::default();
+            params
+                .distinguished_name
+                .push(rcgen::DnType::CommonName, "ltr-web-console");
+            params.subject_alt_names.push(SanType::DnsName(
+                "localhost".try_into().expect("static DNS name is valid"),
+            ));
+            if let Ok(ip) = server_host.parse::<IpAddr>() {
+                params.subject_alt_names.push(SanType::IpAddress(ip));
+            } else if !server_host.is_empty() {
+                params.subject_alt_names.push(SanType::DnsName(
+                    server_host
+                        .try_into()
+                        .context("invalid Web certificate hostname")?,
+                ));
+            }
+            let signing_key =
+                KeyPair::generate().context("could not generate a Web certificate key")?;
+            let certificate = params
+                .self_signed(&signing_key)
                 .context("could not generate a self-signed Web certificate")?;
             let config = WebTlsConfig {
-                cert_pem: generated.cert.pem().into_bytes(),
-                key_pem: generated.signing_key.serialize_pem().into_bytes(),
+                cert_pem: certificate.pem().into_bytes(),
+                key_pem: signing_key.serialize_pem().into_bytes(),
             };
             fs::create_dir_all(data_dir).with_context(|| {
                 format!("could not create Web data directory {}", data_dir.display())
             })?;
-            fs::write(&cert_path, &config.cert_pem).with_context(|| {
-                format!("could not save Web certificate {}", cert_path.display())
-            })?;
-            write_private(&key_path, &config.key_pem).with_context(|| {
-                format!("could not save Web private key {}", key_path.display())
-            })?;
+            crate::atomic_file::write_atomic(&cert_path, &config.cert_pem, None).with_context(
+                || format!("could not save Web certificate {}", cert_path.display()),
+            )?;
+            crate::atomic_file::write_atomic(&key_path, &config.key_pem, Some(0o600))
+                .with_context(|| {
+                    format!("could not save Web private key {}", key_path.display())
+                })?;
             Ok(config)
         }
     }
@@ -138,30 +158,15 @@ pub(crate) fn data_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(base).join("ltr"))
 }
 
-fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, contents)
-}
-
 fn create_private_file(path: &Path, token: &str) -> std::io::Result<()> {
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-
-    let mut file = options.open(path)?;
-    std::io::Write::write_all(&mut file, token.as_bytes())?;
-    Ok(())
+    let tmp = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+    if let Some(parent) = tmp.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    crate::atomic_file::write_new(&tmp, token.as_bytes(), Some(0o600))?;
+    let result = fs::hard_link(&tmp, path);
+    let _ = fs::remove_file(tmp);
+    result
 }
 
 #[cfg(test)]
@@ -169,6 +174,33 @@ mod tests {
     use std::{fs, time::SystemTime};
 
     use super::load_or_generate_at;
+    use uuid::Uuid;
+
+    #[test]
+    fn concurrent_token_generation_publishes_one_complete_token() {
+        let root = std::env::temp_dir().join(format!("ltr-web-token-race-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("web-token");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers = (0..2)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    load_or_generate_at(&path, None).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let tokens = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(tokens[0], tokens[1]);
+        assert_eq!(fs::read_to_string(&path).unwrap(), tokens[0]);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn generated_token_is_reused() {

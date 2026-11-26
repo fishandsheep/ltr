@@ -7,7 +7,10 @@ use anyhow::Result;
 use dashmap::DashMap;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{sleep, timeout};
+use tokio::{
+    sync::{OwnedSemaphorePermit, Semaphore},
+    time::{sleep, timeout},
+};
 use tracing::{info, info_span, warn, Instrument};
 use uuid::Uuid;
 
@@ -15,6 +18,9 @@ use crate::auth::Authenticator;
 use crate::shared::{configure_tcp_stream, ClientMessage, Delimited, ServerMessage, CONTROL_PORT};
 use crate::transport::{self, BoxedStream, ServerTlsConfig};
 use crate::OnReady;
+
+const MAX_CONTROL_CONNECTIONS: usize = 1024;
+const MAX_PENDING_CONNECTIONS: usize = 1024;
 
 /// State structure for the server.
 pub struct Server {
@@ -24,8 +30,10 @@ pub struct Server {
     /// Optional secret used to authenticate clients.
     auth: Option<Authenticator>,
 
-    /// Concurrent map of IDs to incoming connections.
-    conns: Arc<DashMap<Uuid, TcpStream>>,
+    /// Pending data sockets indexed by protocol connection ID.
+    conns: Arc<DashMap<Uuid, (TcpStream, OwnedSemaphorePermit)>>,
+    pending_connection_limit: Arc<Semaphore>,
+    control_connection_limit: Arc<Semaphore>,
 
     /// IP address where the control server will bind to.
     bind_addr: IpAddr,
@@ -47,6 +55,8 @@ impl Server {
         Server {
             port_range,
             conns: Arc::new(DashMap::new()),
+            pending_connection_limit: Arc::new(Semaphore::new(MAX_PENDING_CONNECTIONS)),
+            control_connection_limit: Arc::new(Semaphore::new(MAX_CONTROL_CONNECTIONS)),
             auth: secret.map(Authenticator::new),
             bind_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             bind_tunnels: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -94,10 +104,26 @@ impl Server {
         }
 
         loop {
-            let (stream, addr) = listener.accept().await?;
+            let (stream, addr) = match listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(err) => {
+                    warn!(%err, "failed to accept control connection; retrying");
+                    sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            let permit = match Arc::clone(&this.control_connection_limit).try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    warn!(?addr, "control connection limit reached");
+                    drop(stream);
+                    continue;
+                }
+            };
             let this = Arc::clone(&this);
             tokio::spawn(
                 async move {
+                    let _permit = permit;
                     info!("incoming connection");
                     let stream = match transport::accept(stream, this.tls.as_ref()).await {
                         Ok(stream) => stream,
@@ -192,8 +218,25 @@ impl Server {
                         return Ok(());
                     }
                     const TIMEOUT: Duration = Duration::from_millis(500);
-                    if let Ok(result) = timeout(TIMEOUT, listener.accept()).await {
-                        let (stream2, addr) = result?;
+                    let accepted = match timeout(TIMEOUT, listener.accept()).await {
+                        Ok(Ok(accepted)) => Some(accepted),
+                        Ok(Err(err)) => {
+                            warn!(%err, "failed to accept tunnel connection; retrying");
+                            sleep(Duration::from_millis(100)).await;
+                            None
+                        }
+                        Err(_) => None,
+                    };
+                    if let Some((stream2, addr)) = accepted {
+                        let permit =
+                            match Arc::clone(&self.pending_connection_limit).try_acquire_owned() {
+                                Ok(permit) => permit,
+                                Err(_) => {
+                                    warn!(?addr, "pending tunnel connection limit reached");
+                                    drop(stream2);
+                                    continue;
+                                }
+                            };
                         if let Err(err) = configure_tcp_stream(&stream2) {
                             warn!(%err, "failed to configure proxy connection");
                         }
@@ -202,7 +245,7 @@ impl Server {
                         let id = Uuid::new_v4();
                         let conns = Arc::clone(&self.conns);
 
-                        conns.insert(id, stream2);
+                        conns.insert(id, (stream2, permit));
                         tokio::spawn(async move {
                             // Remove stale entries to avoid memory leaks.
                             sleep(Duration::from_secs(10)).await;
@@ -217,7 +260,7 @@ impl Server {
             Some(ClientMessage::Accept(id)) => {
                 info!(%id, "forwarding connection");
                 match self.conns.remove(&id) {
-                    Some((_, mut stream2)) => {
+                    Some((_, (mut stream2, _permit))) => {
                         let mut parts = stream.into_parts();
                         debug_assert!(parts.write_buf.is_empty(), "framed write buffer not empty");
                         stream2.write_all(&parts.read_buf).await?;

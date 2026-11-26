@@ -28,7 +28,7 @@ impl Authenticator {
     /// Validate a reply to a challenge.
     ///
     /// ```
-    /// use ltr_cli::auth::Authenticator;
+    /// use ltr_relay::auth::Authenticator;
     /// use uuid::Uuid;
     ///
     /// let auth = Authenticator::new("secret");

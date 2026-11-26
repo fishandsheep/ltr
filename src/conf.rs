@@ -365,9 +365,28 @@ pub fn key_spec(name: &str) -> Option<&'static KeySpec> {
 }
 
 /// The parsed config file.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct FileConfig {
     entries: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for FileConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let entries = self
+            .entries
+            .iter()
+            .map(|(key, value)| {
+                let rendered = key_spec(key)
+                    .filter(|spec| spec.masked)
+                    .map_or(value.as_str(), |_| MASKED_VALUE);
+                (key, rendered)
+            })
+            .collect::<BTreeMap<_, _>>();
+        formatter
+            .debug_struct("FileConfig")
+            .field("entries", &entries)
+            .finish()
+    }
 }
 
 impl FileConfig {
@@ -431,27 +450,8 @@ impl FileConfig {
                 format!("could not create config directory {}", parent.display())
             })?;
         }
-        let tmp = path.with_extension("toml.tmp");
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)
-                .with_context(|| format!("could not create {}", tmp.display()))?;
-            file.write_all(raw.as_bytes())?;
-        }
-        #[cfg(not(unix))]
-        {
-            std::fs::write(&tmp, raw.as_bytes())
-                .with_context(|| format!("could not create {}", tmp.display()))?;
-        }
-        fs::rename(&tmp, path).with_context(|| format!("could not replace {}", path.display()))?;
-        Ok(())
+        crate::atomic_file::write_atomic(path, raw.as_bytes(), Some(0o600))
+            .with_context(|| format!("could not save {}", path.display()))
     }
 
     /// Returns the raw saved value for a key.
@@ -505,12 +505,22 @@ fn stringify_toml(value: &toml::Value) -> Option<String> {
 }
 
 /// One resolved setting: its value and where it came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResolvedValue {
     /// The effective value.
     pub value: String,
     /// The layer that provided it.
     pub source: Source,
+}
+
+impl fmt::Debug for ResolvedValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedValue")
+            .field("value", &MASKED_VALUE)
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 /// Resolves a single key across the three layers below the CLI.
@@ -696,6 +706,25 @@ mod tests {
         assert!(Kind::Addr.parse("127.0.0.1").is_err());
         assert!(Kind::Bool.parse("yes").is_ok());
         assert!(Kind::Bool.parse("maybe").is_err());
+    }
+
+    #[test]
+    fn resolved_secret_debug_is_redacted() {
+        let resolved = super::ResolvedValue {
+            value: "relay-secret-value".to_string(),
+            source: Source::File,
+        };
+        assert!(!format!("{resolved:?}").contains("relay-secret-value"));
+    }
+
+    #[test]
+    fn file_config_debug_redacts_secret_values() {
+        let mut config = FileConfig::default();
+        config.set("secret", "relay-secret-value").unwrap();
+        config.set("web-token", "web-token-value").unwrap();
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("relay-secret-value"));
+        assert!(!rendered.contains("web-token-value"));
     }
 
     #[test]

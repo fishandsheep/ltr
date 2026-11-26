@@ -17,7 +17,9 @@
 #![allow(unsafe_code)]
 
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
@@ -193,6 +195,60 @@ enum ChildSignal {
     Ready,
 }
 
+struct DaemonChildArgs {
+    args: Vec<OsString>,
+    env: std::collections::HashMap<String, String>,
+}
+
+fn daemon_child_args(args: &Args, raw_args: &[OsString]) -> DaemonChildArgs {
+    let mut env = std::collections::HashMap::new();
+    let mut child_args = Vec::with_capacity(raw_args.len());
+    let mut index = 0;
+    while index < raw_args.len() {
+        let arg = raw_args[index].to_string_lossy();
+        let (name, inline_value) = arg
+            .split_once('=')
+            .map_or((arg.as_ref(), None), |(name, value)| (name, Some(value)));
+        let key = match name {
+            "--secret" => Some("LTR_SECRET"),
+            "--web-token" => Some("LTR_WEB_TOKEN"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            let value = inline_value.map(str::to_owned).or_else(|| {
+                raw_args
+                    .get(index + 1)
+                    .map(|value| value.to_string_lossy().into_owned())
+            });
+            if let Some(value) = value {
+                env.insert(key.to_string(), value);
+                index += if inline_value.is_some() { 1 } else { 2 };
+                continue;
+            }
+        }
+        child_args.push(raw_args[index].clone());
+        index += 1;
+    }
+
+    // Parsed values include environment-sourced secrets that were never in argv.
+    if let Some(secret) = args.tunnel.secret.as_ref().or(match &args.command {
+        Some(Command::Server(server)) => server.secret.as_ref(),
+        _ => None,
+    }) {
+        env.entry("LTR_SECRET".to_string())
+            .or_insert_with(|| secret.clone());
+    }
+    if let Some(token) = args.web.web_token.as_ref() {
+        env.entry("LTR_WEB_TOKEN".to_string())
+            .or_insert_with(|| token.clone());
+    }
+
+    DaemonChildArgs {
+        args: child_args,
+        env,
+    }
+}
+
 /// Re-executes the current binary as a detached background child and waits
 /// until it reports readiness, then exits the parent with status 0.
 ///
@@ -221,7 +277,13 @@ pub async fn spawn_and_wait(args: &Args) -> ! {
     use std::os::unix::process::CommandExt;
 
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(env::args_os().skip(1))
+    // Do not place tunnel secrets or Web bearer tokens in the re-exec argv:
+    // other local users can inspect `/proc/<pid>/cmdline`. Transfer them via
+    // the child environment instead; clap hides these environment values.
+    let raw_args = env::args_os().skip(1).collect::<Vec<_>>();
+    let child_args = daemon_child_args(args, &raw_args);
+    cmd.args(child_args.args)
+        .envs(child_args.env)
         .env(CHILD_ENV, "1")
         .env(LOG_ENV, &log_path)
         .stdin(Stdio::null())
@@ -308,6 +370,8 @@ where
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::ffi::OsString;
+
     use super::{command_log_name, log_path, READY_MARKER};
     use crate::cli::Args;
     use clap::Parser;
@@ -335,5 +399,37 @@ mod tests {
     fn log_path_lands_in_logs_directory() {
         let path = log_path("server").expect("log path should resolve");
         assert!(path.ends_with("logs/server.log"));
+    }
+
+    #[test]
+    fn daemon_reexec_arguments_move_credentials_to_environment() {
+        let args = Args::try_parse_from([
+            "ltr",
+            "8000",
+            "--secret",
+            "relay-secret-value",
+            "--web-token=web-token-value",
+        ])
+        .expect("arguments should parse");
+        let raw_args = [
+            "8000",
+            "--secret",
+            "relay-secret-value",
+            "--web-token=web-token-value",
+        ]
+        .map(OsString::from);
+        let child_args = super::daemon_child_args(&args, &raw_args);
+        assert!(!child_args.args.iter().any(|arg| {
+            let arg = arg.to_string_lossy();
+            arg.contains("relay-secret-value") || arg.contains("web-token-value")
+        }));
+        assert_eq!(
+            child_args.env.get("LTR_SECRET").map(String::as_str),
+            Some("relay-secret-value")
+        );
+        assert_eq!(
+            child_args.env.get("LTR_WEB_TOKEN").map(String::as_str),
+            Some("web-token-value")
+        );
     }
 }

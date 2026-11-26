@@ -28,6 +28,8 @@ pub struct WebState {
     web_tls: Arc<Option<WebTlsConfig>>,
     limits: Arc<WebLimits>,
     store_path: Option<Arc<std::path::PathBuf>>,
+    start_lock: Arc<Mutex<()>>,
+    persist_lock: Arc<Mutex<()>>,
 }
 
 impl fmt::Debug for WebState {
@@ -113,6 +115,8 @@ impl WebState {
             web_tls: Arc::new(web_tls),
             limits: Arc::new(limits),
             store_path: store_path.map(Arc::new),
+            start_lock: Arc::new(Mutex::new(())),
+            persist_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -121,7 +125,12 @@ impl WebState {
     }
 
     pub fn web_token_matches(&self, token: &str) -> bool {
-        self.web_token.as_ref().as_deref() == Some(token)
+        use subtle::ConstantTimeEq;
+
+        self.web_token
+            .as_ref()
+            .as_deref()
+            .is_some_and(|expected| bool::from(expected.as_bytes().ct_eq(token.as_bytes())))
     }
 
     pub fn web_tls(&self) -> Option<WebTlsConfig> {
@@ -141,11 +150,12 @@ impl WebState {
         let Some(path) = self.store_path.as_ref() else {
             return;
         };
+        let _persist_guard = self.persist_lock.lock().await;
         let tunnels = self.tunnels.read().await;
         let mut snapshot = Vec::new();
         for entry in tunnels.entries.values() {
             let runtime = entry.lock().await;
-            if runtime.role != TunnelRole::User {
+            if !runtime.persisted_user {
                 continue;
             }
             snapshot.push((
@@ -193,6 +203,7 @@ impl WebState {
     /// adopted instead of failing the identity conflict; a running one is a
     /// hard error because another instance already owns it.
     pub async fn ensure_system_tunnel(&self, spec: SystemTunnelSpec) -> Result<String, StateError> {
+        let _start_guard = self.start_lock.lock().await;
         let session = self.session().await;
         let config = normalize_config(spec.config.clone(), session.loopback_only)?;
         let config_key = config.identity_key();
@@ -225,6 +236,8 @@ impl WebState {
             }
             runtime.touch();
             runtime.push_log("adopted by a system tunnel".to_string());
+            drop(runtime);
+            self.persist().await;
             return Ok(existing_id);
         }
 
@@ -232,6 +245,7 @@ impl WebState {
     }
 
     pub async fn update_tunnel(&self, id: &str, config: TunnelConfig) -> Result<(), StateError> {
+        let _start_guard = self.start_lock.lock().await;
         let session = self.session().await;
         let config = normalize_config(config, session.loopback_only)?;
         let entry = self.entry(id).await?;
@@ -302,7 +316,10 @@ impl WebState {
     }
 
     pub async fn start_tunnel(&self, id: &str) -> Result<(), StateError> {
-        let entries = {
+        // Serialize start transitions: conflict detection and reservation must
+        // not interleave with another API request starting the same identity.
+        let _start_guard = self.start_lock.lock().await;
+        let (entry, others) = {
             let tunnels = self.tunnels.read().await;
             let entry = tunnels
                 .entries
@@ -313,30 +330,80 @@ impl WebState {
             (entry, others)
         };
 
-        let (entry, others) = entries;
-        let config_key = {
-            let runtime = entry.lock().await;
+        // Inspect other active identities without holding the registry lock.
+        // Then reserve Starting while holding the registry write lock using
+        // try_lock, so updates/deletes cannot race the check and persistence
+        // cannot deadlock against a registry lock held across an await.
+        let local_args = loop {
+            let config_key = {
+                let runtime = entry.lock().await;
+                if matches!(
+                    runtime.status,
+                    TunnelStatus::Starting | TunnelStatus::Running
+                ) {
+                    return Err(conflict("tunnel is already running"));
+                }
+                runtime.config.identity_key()
+            };
+
+            let tunnels = self.tunnels.write().await;
+            if !tunnels
+                .entries
+                .get(id)
+                .is_some_and(|registered| Arc::ptr_eq(registered, &entry))
+            {
+                return Err(not_found("tunnel not found"));
+            }
+            let mut retry = false;
+            for other in &others {
+                if Arc::ptr_eq(other, &entry) {
+                    continue;
+                }
+                match other.try_lock() {
+                    Ok(runtime)
+                        if matches!(
+                            runtime.status,
+                            TunnelStatus::Starting | TunnelStatus::Running
+                        ) && runtime.config.identity_key() == config_key =>
+                    {
+                        return Err(conflict("an identical tunnel is already running"));
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        retry = true;
+                        break;
+                    }
+                }
+            }
+            if retry {
+                drop(tunnels);
+                tokio::task::yield_now().await;
+                continue;
+            }
+            let Ok(mut runtime) = entry.try_lock() else {
+                drop(tunnels);
+                continue;
+            };
             if matches!(
                 runtime.status,
                 TunnelStatus::Starting | TunnelStatus::Running
             ) {
                 return Err(conflict("tunnel is already running"));
             }
-            runtime.config.identity_key()
-        };
-
-        for other in others {
-            let runtime = other.lock().await;
-            if runtime.id != id
-                && matches!(
-                    runtime.status,
-                    TunnelStatus::Starting | TunnelStatus::Running
-                )
-                && runtime.config.identity_key() == config_key
-            {
-                return Err(conflict("an identical tunnel is already running"));
+            if runtime.config.identity_key() != config_key {
+                drop(runtime);
+                drop(tunnels);
+                continue;
             }
-        }
+            runtime.status = TunnelStatus::Starting;
+            runtime.remote_port = None;
+            runtime.error = None;
+            runtime.service_proto = None;
+            runtime.touch();
+            let tunnel_name = runtime.config.name.clone();
+            runtime.push_log(format!("starting tunnel {tunnel_name}"));
+            break LocalArgs::from(runtime.config.clone());
+        };
 
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -358,20 +425,12 @@ impl WebState {
             }
         });
 
-        let local_args = {
+        let mut local_args = local_args;
+        {
             let mut runtime = entry.lock().await;
-            runtime.status = TunnelStatus::Starting;
-            runtime.remote_port = None;
-            runtime.error = None;
-            runtime.service_proto = None;
-            runtime.touch();
-            let tunnel_name = runtime.config.name.clone();
-            runtime.push_log(format!("starting tunnel {tunnel_name}"));
             runtime.shutdown_tx = Some(shutdown_tx);
-            let mut local_args = LocalArgs::from(runtime.config.clone());
             local_args.max_connections = self.limits.max_active_connections;
-            local_args
-        };
+        }
 
         let handle = tokio::spawn(async move {
             let _ = run_local(
@@ -390,41 +449,26 @@ impl WebState {
     }
 
     pub async fn stop_tunnel(&self, id: &str) -> Result<(), StateError> {
+        let _start_guard = self.start_lock.lock().await;
         let entry = self.entry(id).await?;
-        let (shutdown_tx, handle) = {
-            let mut runtime = entry.lock().await;
-            if runtime.locked {
-                return Err(conflict("system tunnel is locked"));
-            }
-            (runtime.shutdown_tx.take(), runtime.handle.take())
-        };
-
-        if let Some(shutdown_tx) = shutdown_tx {
-            let _ = shutdown_tx.send(());
+        if entry.lock().await.locked {
+            return Err(conflict("system tunnel is locked"));
         }
-        if let Some(handle) = handle {
-            let _ = handle.await;
-        }
-
-        let mut runtime = entry.lock().await;
-        if matches!(
-            runtime.status,
-            TunnelStatus::Starting | TunnelStatus::Running
-        ) {
-            runtime.status = TunnelStatus::Stopped;
-            runtime.touch();
-            runtime.push_log("tunnel stopped".to_string());
-        }
+        Self::stop_entry(&entry).await;
         Ok(())
     }
 
     pub async fn stop_tunnel_force(&self, id: &str) -> Result<(), StateError> {
         let entry = self.entry(id).await?;
+        Self::stop_entry(&entry).await;
+        Ok(())
+    }
+
+    async fn stop_entry(entry: &Arc<Mutex<TunnelRuntime>>) {
         let (shutdown_tx, handle) = {
             let mut runtime = entry.lock().await;
             (runtime.shutdown_tx.take(), runtime.handle.take())
         };
-
         if let Some(shutdown_tx) = shutdown_tx {
             let _ = shutdown_tx.send(());
         }
@@ -441,10 +485,10 @@ impl WebState {
             runtime.touch();
             runtime.push_log("tunnel stopped".to_string());
         }
-        Ok(())
     }
 
     pub async fn delete_tunnel(&self, id: &str) -> Result<(), StateError> {
+        let _start_guard = self.start_lock.lock().await;
         let entry = self.entry(id).await?;
         {
             let runtime = entry.lock().await;
@@ -525,13 +569,13 @@ impl WebState {
     }
 
     pub async fn shutdown_all(&self) {
-        let ids = {
+        let _start_guard = self.start_lock.lock().await;
+        let entries = {
             let tunnels = self.tunnels.read().await;
-            tunnels.entries.keys().cloned().collect::<Vec<_>>()
+            tunnels.entries.values().cloned().collect::<Vec<_>>()
         };
-
-        for id in ids {
-            let _ = self.stop_tunnel_force(&id).await;
+        for entry in entries {
+            Self::stop_entry(&entry).await;
         }
     }
 
@@ -571,6 +615,7 @@ impl WebState {
                 super::session::TunnelKind::System
             },
             role,
+            persisted_user: role == TunnelRole::User,
             locked,
             display_url,
             created_at: now.clone(),
@@ -766,6 +811,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn web_token_comparison_matches_only_exact_tokens() {
+        let state = WebState::with_web_token(SessionInfo::local(), Some("token".to_string()));
+        assert!(state.web_token_matches("token"));
+        assert!(!state.web_token_matches("tokem"));
+        assert!(!state.web_token_matches("token-longer"));
+    }
+
+    #[tokio::test]
     async fn starting_running_tunnel_returns_error() {
         let state = WebState::default();
         let id = state
@@ -782,6 +835,26 @@ mod tests {
             .await
             .expect_err("start should fail");
         assert_eq!(err.status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn concurrent_start_requests_reserve_one_transition() {
+        let state = WebState::default();
+        let id = state
+            .create_tunnel(config("dev"))
+            .await
+            .expect("create should work");
+
+        let first_state = state.clone();
+        let first_id = id.clone();
+        let first = tokio::spawn(async move { first_state.start_tunnel(&first_id).await });
+        let second_state = state.clone();
+        let second_id = id.clone();
+        let second = tokio::spawn(async move { second_state.start_tunnel(&second_id).await });
+        let outcomes = [first.await.unwrap(), second.await.unwrap()];
+        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
+        state.stop_tunnel_force(&id).await.unwrap();
     }
 
     #[tokio::test]
@@ -822,6 +895,56 @@ mod tests {
         assert_eq!(logs.len(), DEFAULT_MAX_LOG_LINES);
         assert_eq!(logs.first().expect("first log"), "line-20");
         assert_eq!(logs.last().expect("last log"), "line-519");
+    }
+
+    #[tokio::test]
+    async fn adopted_user_tunnel_remains_persisted() {
+        let store = std::env::temp_dir().join(format!(
+            "ltr-adopted-tunnel-test-{}.toml",
+            uuid::Uuid::new_v4()
+        ));
+        let state = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store.clone()),
+        );
+        let user_id = state
+            .create_tunnel(config("persisted"))
+            .await
+            .expect("user tunnel should be created");
+        state
+            .ensure_system_tunnel(super::SystemTunnelSpec {
+                role: SystemTunnelRole::WebConsole,
+                config: config("Web Console"),
+                display_url: None,
+            })
+            .await
+            .expect("stopped user tunnel should be adopted");
+        state
+            .update_tunnel(
+                &user_id,
+                TunnelConfig {
+                    name: "renamed".into(),
+                    ..config("persisted")
+                },
+            )
+            .await
+            .expect_err("adopted system tunnel is locked to user edits");
+        state.persist().await;
+
+        let persisted = std::fs::read_to_string(&store).expect("user tunnel remains on disk");
+        assert!(persisted.contains(&user_id));
+        let reloaded = WebState::with_limits_and_store(
+            SessionInfo::local(),
+            None,
+            None,
+            super::WebLimits::default(),
+            Some(store.clone()),
+        );
+        assert_eq!(reloaded.list_tunnels().await.len(), 1);
+        let _ = std::fs::remove_file(store);
     }
 
     #[tokio::test]

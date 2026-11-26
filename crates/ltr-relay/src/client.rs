@@ -26,7 +26,7 @@ const RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_ACTIVE_CONNECTIONS: usize = 256;
 
 /// CLI arguments for the local client tunnel.
-#[derive(clap::Args, Debug, Clone, Serialize, Deserialize)]
+#[derive(clap::Args, Clone, Serialize, Deserialize)]
 pub struct LocalArgs {
     /// The local port to expose.
     #[arg(env = "LTR_LOCAL_PORT")]
@@ -46,6 +46,7 @@ pub struct LocalArgs {
 
     /// Optional secret for authentication.
     #[arg(short, long, env = "LTR_SECRET", hide_env_values = true)]
+    #[serde(skip_serializing, skip_deserializing)]
     pub secret: Option<String>,
 
     /// Disable TLS and connect over plaintext (for relays without TLS).
@@ -87,6 +88,26 @@ pub struct LocalArgs {
         hide = true
     )]
     pub max_connections: usize,
+}
+
+impl std::fmt::Debug for LocalArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LocalArgs")
+            .field("local_port", &self.local_port)
+            .field("local_host", &self.local_host)
+            .field("to", &self.to)
+            .field("port", &self.port)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .field("no_tls", &self.no_tls)
+            .field("tls_ca", &self.tls_ca)
+            .field("tls_fingerprint", &self.tls_fingerprint)
+            .field("tls_server_name", &self.tls_server_name)
+            .field("tls_client_cert", &self.tls_client_cert)
+            .field("tls_client_key", &self.tls_client_key)
+            .field("max_connections", &self.max_connections)
+            .finish()
+    }
 }
 
 /// Events emitted while a local tunnel is running.

@@ -39,14 +39,19 @@ const AFTER_HELP: &str = "Examples:\n  ltr conf set to your-server.example\n  lt
 
 /// Shared local web console arguments (all hidden power flags; the defaults
 /// live in the conf registry).
-#[derive(clap::Args, Debug, Clone, Default)]
+#[derive(clap::Args, Clone, Default)]
 pub struct WebConsoleArgs {
     /// Address for the local web console.
     #[arg(long = "web-addr", hide = true)]
     pub web_addr: Option<SocketAddr>,
 
     /// Bearer token for Web API requests.
-    #[arg(long = "web-token", hide = true)]
+    #[arg(
+        long = "web-token",
+        env = "LTR_WEB_TOKEN",
+        hide = true,
+        hide_env_values = true
+    )]
     pub web_token: Option<String>,
 
     /// Maximum number of tunnel definitions in the Web control plane.
@@ -64,7 +69,7 @@ pub struct WebConsoleArgs {
 
 /// Shared relay destination arguments, flattened at the top level and into the
 /// tunnel subcommands so both `ltr 8000 -t host` and `ltr web -t host` work.
-#[derive(clap::Args, Debug, Clone, Default)]
+#[derive(clap::Args, Clone, Default)]
 pub struct TunnelArgs {
     /// Address of the remote relay server.
     #[arg(short = 't', long = "to", value_name = "HOST")]
@@ -75,7 +80,12 @@ pub struct TunnelArgs {
     pub dport: Option<u16>,
 
     /// Optional secret for authentication.
-    #[arg(long = "secret", hide = true)]
+    #[arg(
+        long = "secret",
+        env = "LTR_SECRET",
+        hide = true,
+        hide_env_values = true
+    )]
     pub secret: Option<String>,
 
     /// Disable TLS and connect over plaintext (for relays without TLS).
@@ -107,6 +117,37 @@ pub struct TunnelArgs {
     pub max_connections: Option<usize>,
 }
 
+impl std::fmt::Debug for TunnelArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TunnelArgs")
+            .field("to", &self.to)
+            .field("dport", &self.dport)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .field("no_tls", &self.no_tls)
+            .field("tls_ca", &self.tls_ca)
+            .field("tls_fingerprint", &self.tls_fingerprint)
+            .field("tls_server_name", &self.tls_server_name)
+            .field("tls_client_cert", &self.tls_client_cert)
+            .field("tls_client_key", &self.tls_client_key)
+            .field("max_connections", &self.max_connections)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for WebConsoleArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebConsoleArgs")
+            .field("web_addr", &self.web_addr)
+            .field("web_token", &self.web_token.as_ref().map(|_| "[redacted]"))
+            .field("web_max_tunnels", &self.web_max_tunnels)
+            .field("web_max_connections", &self.web_max_connections)
+            .field("web_max_log_lines", &self.web_max_log_lines)
+            .finish()
+    }
+}
+
 impl TunnelArgs {
     /// Merges two layers of tunnel arguments; the subcommand layer wins.
     pub fn merged_over(&self, top: &TunnelArgs) -> TunnelArgs {
@@ -128,7 +169,7 @@ impl TunnelArgs {
 
 /// Top-level CLI arguments. Every optional field stays `Option` so the conf
 /// layer can tell "explicitly passed" apart from "unset".
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(
     author,
     version,
@@ -176,6 +217,24 @@ pub struct Args {
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl std::fmt::Debug for Args {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Args")
+            .field("target", &self.target)
+            .field("tunnel", &self.tunnel)
+            .field("front", &self.front)
+            .field("list", &self.list)
+            .field("stop", &self.stop)
+            .field("version", &self.version)
+            .field("web", &self.web)
+            .field("log_level", &self.log_level)
+            .field("log_json", &self.log_json)
+            .field("command", &self.command)
+            .finish()
+    }
 }
 
 impl Args {
@@ -286,7 +345,7 @@ pub enum ConfAction {
 }
 
 /// Server CLI arguments.
-#[derive(clap::Args, Debug, Clone, Default)]
+#[derive(clap::Args, Clone, Default)]
 pub struct ServerArgs {
     /// Minimum accepted TCP port number.
     #[arg(long, hide = true)]
@@ -297,7 +356,7 @@ pub struct ServerArgs {
     pub max_port: Option<u16>,
 
     /// Optional secret for authentication.
-    #[arg(long, hide = true)]
+    #[arg(long, env = "LTR_SECRET", hide = true, hide_env_values = true)]
     pub secret: Option<String>,
 
     /// IP address to bind to, clients must reach this.
@@ -327,7 +386,7 @@ pub struct ServerArgs {
 
 /// Fully resolved settings for one invocation: CLI > config file > `LTR_*`
 /// environment variables > built-in defaults.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Eff {
     /// Remote relay server.
     pub to: Option<String>,
@@ -385,6 +444,59 @@ pub struct Eff {
     pub tls_key: Option<PathBuf>,
     /// Server: CA PEM requiring client certificates.
     pub tls_client_ca: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for ServerArgs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ServerArgs")
+            .field("min_port", &self.min_port)
+            .field("max_port", &self.max_port)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .field("bind_addr", &self.bind_addr)
+            .field("bind_tunnels", &self.bind_tunnels)
+            .field("no_tls", &self.no_tls)
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("tls_client_ca", &self.tls_client_ca)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Eff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Eff")
+            .field("to", &self.to)
+            .field("dport", &self.dport)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .field("no_tls", &self.no_tls)
+            .field("tls_ca", &self.tls_ca)
+            .field("tls_fingerprint", &self.tls_fingerprint)
+            .field("tls_server_name", &self.tls_server_name)
+            .field("tls_client_cert", &self.tls_client_cert)
+            .field("tls_client_key", &self.tls_client_key)
+            .field("max_connections", &self.max_connections)
+            .field("front", &self.front)
+            .field("log_level", &self.log_level)
+            .field("log_json", &self.log_json)
+            .field("web_addr", &self.web_addr)
+            .field("web_token", &self.web_token.as_ref().map(|_| "[redacted]"))
+            .field("web_max_tunnels", &self.web_max_tunnels)
+            .field("web_max_connections", &self.web_max_connections)
+            .field("web_max_log_lines", &self.web_max_log_lines)
+            .field("web_cert", &self.web_cert)
+            .field("web_key", &self.web_key)
+            .field("ssh_local", &self.ssh_local)
+            .field("min_port", &self.min_port)
+            .field("max_port", &self.max_port)
+            .field("bind_addr", &self.bind_addr)
+            .field("bind_tunnels", &self.bind_tunnels)
+            .field("tls_cert", &self.tls_cert)
+            .field("tls_key", &self.tls_key)
+            .field("tls_client_ca", &self.tls_client_ca)
+            .finish()
+    }
 }
 
 impl Eff {
@@ -1129,13 +1241,13 @@ fn stop_instance(record: &Record) -> Result<()> {
         "Stopping {} ({}) pid {}...",
         record.kind, record.local, record.pid
     );
-    instances::send_terminate(record.pid)?;
-    if !instances::wait_gone(record.pid, 5) {
+    instances::terminate_record(record)?;
+    if !instances::wait_gone(record, 5) {
         eprintln!("  did not exit within 5s, killing pid {}", record.pid);
-        instances::send_kill(record.pid)?;
-        instances::wait_gone(record.pid, 3);
+        instances::kill_record(record)?;
+        instances::wait_gone(record, 3);
     }
-    Record::remove(record.pid);
+    instances::remove_record(record);
     println!(
         "Stopped {} ({}).",
         record.kind,
@@ -1179,11 +1291,15 @@ pub async fn run_web_local(
     limits: WebLimits,
     on_ready: Option<web::OnReadyAddr>,
 ) -> Result<()> {
-    if !web_addr.ip().is_loopback() && web_token.is_none() {
-        eprintln!(
-            "Warning: Web console is exposed on a non-loopback address without Web authentication."
-        );
-    }
+    // Loopback needs no login; any other bind address must authenticate.
+    let exposed = !web_addr.ip().is_loopback();
+    let token_was_generated = exposed && web_token.is_none();
+    let web_token = if exposed {
+        Some(credentials::load_or_generate(web_token)?)
+    } else {
+        web_token
+    };
+    report_generated_web_credentials(token_was_generated, false)?;
     let state = WebState::with_limits_and_store(
         SessionInfo::local(),
         web_token,
@@ -1269,6 +1385,31 @@ pub async fn run_web_remote(eff: &Eff) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn secret_bearing_debug_output_is_redacted() {
+        let args = super::Args::try_parse_from([
+            "ltr",
+            "--secret",
+            "relay-secret-value",
+            "--web-token",
+            "web-token-value",
+            "8000",
+        ])
+        .expect("arguments should parse");
+        let rendered = format!("{args:?}");
+        assert!(rendered.contains("target: Some(\"8000\")"));
+        assert!(!rendered.contains("relay-secret-value"));
+        assert!(!rendered.contains("web-token-value"));
+        assert!(rendered.contains("secret: Some(\"[redacted]\")"));
+        assert!(rendered.contains("web_token: Some(\"[redacted]\")"));
+
+        let args = super::Args::try_parse_from(["ltr", "8000", "-t", "relay.example"])
+            .expect("arguments should parse");
+        let eff = super::Eff::resolve(&args, &crate::conf::FileConfig::default());
+        let rendered = format!("{eff:?}");
+        assert!(!rendered.contains("relay-secret-value"));
+        assert!(!rendered.contains("web-token-value"));
+    }
     use std::env;
 
     use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -1291,6 +1432,28 @@ mod tests {
             .lock()
             .expect("environment lock should not be poisoned");
         f();
+    }
+
+    #[test]
+    fn secret_and_web_token_parse_from_hidden_environment() {
+        guarded_env(|| {
+            let old_secret = env::var_os("LTR_SECRET");
+            let old_token = env::var_os("LTR_WEB_TOKEN");
+            env::set_var("LTR_SECRET", "env-secret-value");
+            env::set_var("LTR_WEB_TOKEN", "env-web-token-value");
+            let args = Args::try_parse_from(["ltr", "8000", "-t", "relay.example"])
+                .expect("environment-backed credentials should parse");
+            assert_eq!(args.tunnel.secret.as_deref(), Some("env-secret-value"));
+            assert_eq!(args.web.web_token.as_deref(), Some("env-web-token-value"));
+            match old_secret {
+                Some(value) => env::set_var("LTR_SECRET", value),
+                None => env::remove_var("LTR_SECRET"),
+            }
+            match old_token {
+                Some(value) => env::set_var("LTR_WEB_TOKEN", value),
+                None => env::remove_var("LTR_WEB_TOKEN"),
+            }
+        });
     }
 
     #[test]

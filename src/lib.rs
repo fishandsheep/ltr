@@ -17,6 +17,7 @@
 #![warn(missing_docs)]
 
 /// CLI argument parsing and command dispatch.
+mod atomic_file;
 pub mod cli;
 pub mod conf;
 pub mod daemon;

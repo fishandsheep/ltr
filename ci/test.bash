@@ -1,32 +1,27 @@
 #!/usr/bin/env bash
-# Script for building your rust projects.
+# Run the Rust tests for one target, retrying transient cross-build failures.
 set -e
 
 source ci/common.bash
 
 # $1 {path} = Path to cross/cargo executable
 CROSS=$1
-# $1 {string} = <Target Triple>
+# $2 {string} = <Target Triple>
 TARGET_TRIPLE=$2
 
-required_arg $CROSS 'CROSS'
-required_arg $TARGET_TRIPLE '<Target Triple>'
+required_arg "$CROSS" 'CROSS'
+required_arg "$TARGET_TRIPLE" '<Target Triple>'
 
 max_attempts=3
-count=0
-
-while [ $count -lt $max_attempts ]; do
-    $CROSS test --target $TARGET_TRIPLE
-    status=$?
-    if [ $status -eq 0 ]; then
+count=1
+while [ "$count" -le "$max_attempts" ]; do
+    if "$CROSS" test --target "$TARGET_TRIPLE"; then
         echo "Test passed"
-        break
-    else
-        echo "Test failed, attempt $(($count + 1))"
+        exit 0
     fi
-    count=$(($count + 1))
+    echo "Test failed, attempt $count/$max_attempts"
+    count=$((count + 1))
 done
 
-if [ $status -ne 0 ]; then
-    echo "Test failed after $max_attempts attempts"
-fi
+echo "Test failed after $max_attempts attempts"
+exit 1

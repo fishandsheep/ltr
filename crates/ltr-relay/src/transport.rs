@@ -6,7 +6,7 @@
 
 use std::{
     fs::{self, File},
-    io::{BufReader, Write},
+    io::BufReader,
     net::IpAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -50,6 +50,10 @@ pub type BoxedStream = Box<dyn AsyncStream>;
 pub struct ClientTlsConfig {
     connector: TlsConnector,
     server_name: ServerName<'static>,
+    /// True when the connection must remain TLS (explicit CA or fingerprint,
+    /// or a TLS identity already learned for this host). A TLS handshake
+    /// failure in that case never downgrades to plaintext.
+    tls_required: Arc<std::sync::atomic::AtomicBool>,
     /// Human-readable note set when a TOFU verifier trusts a fingerprint for
     /// the first time, so callers can surface it in logs.
     trust_note: Arc<Mutex<Option<String>>>,
@@ -130,6 +134,14 @@ pub fn load_client_tls(
     let trust_note = Arc::new(Mutex::new(None));
     let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()?;
+    let tls_required = Arc::new(std::sync::atomic::AtomicBool::new(
+        ca_path.is_some() || fingerprint.is_some() || {
+            let store_path = tofu_store_path
+                .map(PathBuf::from)
+                .unwrap_or_else(default_known_hosts_path);
+            known_hosts_load(&store_path)?.contains_key(tofu_host)
+        },
+    ));
     let client_config = if let Some(ca_path) = ca_path {
         let roots = root_store(ca_path)?;
         let builder = builder.with_root_certificates(roots);
@@ -165,6 +177,7 @@ pub fn load_client_tls(
             store_path,
             provider: Arc::clone(&provider),
             trust_note: Arc::clone(&trust_note),
+            tls_required: Arc::clone(&tls_required),
         };
         let builder = builder
             .dangerous()
@@ -180,6 +193,7 @@ pub fn load_client_tls(
     Ok(ClientTlsConfig {
         connector: TlsConnector::from(Arc::new(client_config)),
         server_name,
+        tls_required,
         trust_note,
     })
 }
@@ -259,19 +273,25 @@ pub fn load_or_generate_server_tls_at(
         let generated =
             generate_simple_self_signed(vec!["ltr-server".to_string(), "localhost".to_string()])
                 .context("could not generate a self-signed tunnel certificate")?;
-        fs::write(cert_path, generated.cert.pem()).with_context(|| {
+        write_atomic_file(cert_path, generated.cert.pem().as_bytes(), false).with_context(
+            || {
+                format!(
+                    "could not save tunnel TLS certificate {}",
+                    cert_path.display()
+                )
+            },
+        )?;
+        write_atomic_file(
+            key_path,
+            generated.signing_key.serialize_pem().as_bytes(),
+            true,
+        )
+        .with_context(|| {
             format!(
-                "could not save tunnel TLS certificate {}",
-                cert_path.display()
+                "could not save tunnel TLS private key {}",
+                key_path.display()
             )
         })?;
-        write_private_file(key_path, generated.signing_key.serialize_pem().as_bytes())
-            .with_context(|| {
-                format!(
-                    "could not save tunnel TLS private key {}",
-                    key_path.display()
-                )
-            })?;
     }
 
     let certificate = read_certificates(cert_path)?
@@ -333,9 +353,20 @@ pub async fn connect_negotiated(
     .await
     .context("timed out during TLS handshake")?
     {
-        Ok(stream) => Ok(Box::new(stream)),
+        Ok(stream) => {
+            tls.tls_required
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(Box::new(stream))
+        }
+        Err(err)
+            if tls
+                .tls_required
+                .load(std::sync::atomic::Ordering::Relaxed) =>
+        {
+            Err(err).context("TLS handshake failed; this server is pinned to TLS and will not fall back to plaintext")
+        }
         Err(err) if is_non_tls_peer_error(&err) => {
-            // The latch is process-wide and permanent: once a peer proves
+            // The latch is permanent for this client: once a peer proves
             // itself non-TLS, later connections skip TLS entirely. Say so —
             // a silent permanent downgrade deserves a log line.
             tracing::warn!(
@@ -350,7 +381,8 @@ pub async fn connect_negotiated(
 }
 
 /// True when a TLS handshake error indicates the peer responded with
-/// non-TLS bytes (or closed the connection), rather than a trust failure.
+/// non-TLS bytes or closed the connection (legacy plaintext servers reject
+/// the ClientHello by hanging up), rather than a certificate-trust failure.
 fn is_non_tls_peer_error(err: &std::io::Error) -> bool {
     fn chain_has_framing_error(start: &(dyn std::error::Error + 'static)) -> bool {
         let mut source = Some(start);
@@ -376,7 +408,7 @@ fn is_non_tls_peer_error(err: &std::io::Error) -> bool {
             return true;
         }
     }
-    chain_has_framing_error(err) || matches!(err.kind(), std::io::ErrorKind::UnexpectedEof)
+    chain_has_framing_error(err)
 }
 
 async fn tcp_connect(to: &str, port: u16) -> Result<TcpStream> {
@@ -492,16 +524,30 @@ fn root_store(path: &Path) -> Result<RootCertStore> {
     Ok(roots)
 }
 
-fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+fn write_atomic_file(path: &Path, contents: &[u8], private: bool) -> std::io::Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt;
 
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(path)?;
-    file.write_all(contents)
+    if private {
+        options.mode(0o600);
+    }
+    let result = (|| {
+        let mut file = options.open(&tmp)?;
+        std::io::Write::write_all(&mut file, contents)?;
+        file.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    result
 }
 
 fn default_data_dir() -> Result<PathBuf> {
@@ -555,20 +601,26 @@ pub fn default_known_hosts_path() -> PathBuf {
 /// Load the known-hosts store as `host:port -> sha256 fingerprint` pairs.
 fn known_hosts_load(path: &Path) -> Result<std::collections::HashMap<String, [u8; 32]>> {
     let mut hosts = std::collections::HashMap::new();
-    let Ok(contents) = fs::read_to_string(path) else {
-        return Ok(hosts);
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(hosts),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("could not read known-hosts trust store {}", path.display())
+            })
+        }
     };
-    for line in contents.lines() {
+    for (index, line) in contents.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let Some((host, fingerprint)) = line.split_once(' ') else {
-            continue;
-        };
-        if let Ok(fingerprint) = parse_fingerprint(fingerprint) {
-            hosts.insert(host.to_string(), fingerprint);
-        }
+        let (host, fingerprint) = line
+            .split_once(' ')
+            .ok_or_else(|| anyhow::anyhow!("malformed known-hosts entry on line {}", index + 1))?;
+        let fingerprint = parse_fingerprint(fingerprint)
+            .with_context(|| format!("invalid known-hosts fingerprint on line {}", index + 1))?;
+        hosts.insert(host.to_string(), fingerprint);
     }
     Ok(hosts)
 }
@@ -579,7 +631,29 @@ fn known_hosts_store(path: &Path, host: &str, fingerprint: &[u8; 32]) -> Result<
         fs::create_dir_all(parent)
             .with_context(|| format!("could not create config directory {}", parent.display()))?;
     }
+    let mut lock_path = path.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+    let mut lock_options = fs::OpenOptions::new();
+    lock_options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        lock_options.mode(0o600);
+    }
+    let lock_file = lock_options
+        .open(&lock_path)
+        .with_context(|| format!("could not open known-hosts lock {}", lock_path.display()))?;
+    fs2::FileExt::lock_exclusive(&lock_file)
+        .with_context(|| format!("could not lock known-hosts store {}", path.display()))?;
+
     let mut hosts = known_hosts_load(path)?;
+    if let Some(existing) = hosts.get(host) {
+        if existing != fingerprint {
+            bail!("known-hosts fingerprint changed for {host}");
+        }
+        return Ok(());
+    }
     hosts.insert(host.to_string(), *fingerprint);
     let mut keys: Vec<String> = hosts.keys().cloned().collect();
     keys.sort();
@@ -589,12 +663,10 @@ fn known_hosts_store(path: &Path, host: &str, fingerprint: &[u8; 32]) -> Result<
         let hexfp: String = fp.iter().map(|byte| format!("{byte:02x}")).collect();
         lines.push_str(&format!("{key} {hexfp}\n"));
     }
-    let tmp_path = path.with_extension("tmp");
-    write_private_file(&tmp_path, lines.as_bytes())
-        .with_context(|| format!("could not write {}", tmp_path.display()))?;
     // Atomic replace: a concurrent reader or a crash must never observe a
     // half-written store (which would silently reset TOFU trust).
-    fs::rename(&tmp_path, path).with_context(|| format!("could not replace {}", path.display()))
+    write_atomic_file(path, lines.as_bytes(), true)
+        .with_context(|| format!("could not replace {}", path.display()))
 }
 
 #[derive(Debug)]
@@ -668,6 +740,7 @@ struct TofuServerCertVerifier {
     store_path: PathBuf,
     provider: Arc<CryptoProvider>,
     trust_note: Arc<Mutex<Option<String>>>,
+    tls_required: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TofuServerCertVerifier {
@@ -714,7 +787,11 @@ impl ServerCertVerifier for TofuServerCertVerifier {
                     .collect::<String>();
                 Err(self.fingerprint_mismatch_error(expected_fingerprint, &hex))
             }
-            Some(_) => Ok(ServerCertVerified::assertion()),
+            Some(_) => {
+                self.tls_required
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(ServerCertVerified::assertion())
+            }
             None => {
                 // First use: persist the fingerprint, then pin it in memory so
                 // every later handshake in this process compares against it.
@@ -724,6 +801,8 @@ impl ServerCertVerifier for TofuServerCertVerifier {
                     )));
                 }
                 *expected = Some(actual);
+                self.tls_required
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 let hex = actual
                     .iter()
                     .map(|b| format!("{b:02x}"))
@@ -776,7 +855,10 @@ impl ServerCertVerifier for TofuServerCertVerifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_tls_record, parse_fingerprint, parse_server_name};
+    use super::{
+        known_hosts_load, known_hosts_store, looks_like_tls_record, parse_fingerprint,
+        parse_server_name, write_atomic_file,
+    };
 
     #[test]
     fn detects_tls_record_types_without_reclassifying_json() {
@@ -794,6 +876,71 @@ mod tests {
         .expect("fingerprint should parse");
         assert_eq!(fingerprint[0], 0);
         assert_eq!(fingerprint[31], 31);
+    }
+
+    #[test]
+    fn atomic_private_write_does_not_follow_existing_symlink() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let root = std::env::temp_dir().join(format!("ltr-atomic-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let victim = root.join("victim");
+            let target = root.join("key.pem");
+            std::fs::write(&victim, b"untouched").unwrap();
+            symlink(&victim, &target).unwrap();
+
+            write_atomic_file(&target, b"private key", true).unwrap();
+            assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+            assert_eq!(std::fs::read(&target).unwrap(), b"private key");
+            assert!(!std::fs::symlink_metadata(&target)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn concurrent_known_hosts_updates_preserve_all_entries() {
+        let root = std::env::temp_dir().join(format!("ltr-known-hosts-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("known_hosts");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for (host, byte) in [("relay-one:7835", 1), ("relay-two:7835", 2)] {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                known_hosts_store(&path, host, &[byte; 32]).unwrap();
+            }));
+        }
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let hosts = known_hosts_load(&path).unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts["relay-one:7835"], [1; 32]);
+        assert_eq!(hosts["relay-two:7835"], [2; 32]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn known_hosts_store_never_replaces_an_existing_pin() {
+        let root =
+            std::env::temp_dir().join(format!("ltr-known-host-pin-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("known_hosts");
+
+        known_hosts_store(&path, "relay:7835", &[1; 32]).unwrap();
+        assert!(known_hosts_store(&path, "relay:7835", &[2; 32]).is_err());
+        assert_eq!(known_hosts_load(&path).unwrap()["relay:7835"], [1; 32]);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

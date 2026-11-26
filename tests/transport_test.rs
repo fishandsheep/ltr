@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use ltr_cli::{
@@ -310,6 +310,87 @@ async fn connect_negotiated_falls_back_to_plaintext_for_non_tls_peer() -> Result
     let message = framed.recv::<ServerMessage>().await?;
     assert!(matches!(message, Some(ServerMessage::Heartbeat)));
     let _ = server.await;
+    let _ = fs::remove_file(store_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn learned_tls_peer_cannot_be_downgraded_on_reconnect() -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    let cert_path = temp_path("downgrade-cert.pem");
+    let key_path = temp_path("downgrade-key.pem");
+    let cert = generate_simple_self_signed(vec!["localhost".to_string()])?;
+    fs::write(&cert_path, cert.cert.pem())?;
+    fs::write(&key_path, cert.signing_key.serialize_pem())?;
+    let server_tls = transport::load_server_tls(&cert_path, &key_path, None)?;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let server = tokio::spawn(async move {
+        let (first, _) = listener.accept().await?;
+        let first = transport::accept(first, Some(&server_tls)).await?;
+        drop(first);
+        let (mut second, _) = listener.accept().await?;
+        let mut byte = [0u8; 1];
+        second.read_exact(&mut byte).await?;
+        drop(second);
+        if tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .is_ok()
+        {
+            anyhow::bail!("a plaintext retry followed the failed TLS reconnect");
+        }
+        anyhow::Ok(())
+    });
+
+    let store_path = temp_path("tls-disconnect-known-hosts");
+    let client_tls = transport::load_client_tls(tofu_options(port, &store_path), "localhost")?;
+    let plain = std::sync::atomic::AtomicBool::new(false);
+    let first = transport::connect_negotiated("127.0.0.1", port, Some(&client_tls), &plain).await?;
+    drop(first);
+    assert!(!plain.load(std::sync::atomic::Ordering::Relaxed));
+
+    let result = transport::connect_negotiated("127.0.0.1", port, Some(&client_tls), &plain).await;
+    assert!(result.is_err(), "reconnect must not silently downgrade");
+    assert!(!plain.load(std::sync::atomic::Ordering::Relaxed));
+    server.await??;
+    let _ = fs::remove_file(store_path);
+    let _ = fs::remove_file(cert_path);
+    let _ = fs::remove_file(key_path);
+    Ok(())
+}
+
+#[tokio::test]
+async fn connect_negotiated_does_not_fall_back_after_peer_disconnect() -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await?;
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte).await?;
+        drop(stream);
+        if tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .is_ok()
+        {
+            anyhow::bail!("plaintext retry must not follow an EOF");
+        }
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let store_path = temp_path("disconnect-known-hosts");
+    let client_tls = transport::load_client_tls(tofu_options(port, &store_path), "localhost")?;
+    let plain = std::sync::atomic::AtomicBool::new(false);
+    let result = transport::connect_negotiated("127.0.0.1", port, Some(&client_tls), &plain).await;
+    assert!(
+        result.is_err(),
+        "an EOF must not trigger plaintext fallback"
+    );
+    assert!(!plain.load(std::sync::atomic::Ordering::Relaxed));
+    peer.await??;
     let _ = fs::remove_file(store_path);
     Ok(())
 }

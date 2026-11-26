@@ -1,5 +1,8 @@
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::{
+    env, fs,
+    sync::{LazyLock, OnceLock},
+    time::Duration,
+};
 
 use anyhow::{anyhow, Result};
 use axum::{
@@ -9,6 +12,7 @@ use axum::{
 use ltr_cli::{
     server::Server,
     shared::CONTROL_PORT,
+    transport,
     web::{
         router, run_managed, ServeConfig, SessionInfo, SessionMode, SystemTunnelRole,
         SystemTunnelSpec, TunnelConfig, WebLimits, WebState,
@@ -27,11 +31,18 @@ static SERIAL_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct ServerGuard {
     task: JoinHandle<Result<()>>,
+    config_dir: std::path::PathBuf,
+    old_config_dir: Option<std::ffi::OsString>,
 }
 
 impl Drop for ServerGuard {
     fn drop(&mut self) {
         self.task.abort();
+        match self.old_config_dir.take() {
+            Some(path) => env::set_var("XDG_CONFIG_HOME", path),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = fs::remove_dir_all(&self.config_dir);
     }
 }
 
@@ -55,9 +66,32 @@ async fn free_port() -> Result<u16> {
     Ok(port)
 }
 
+fn server_tls() -> transport::ServerTlsConfig {
+    static TLS: OnceLock<transport::ServerTlsConfig> = OnceLock::new();
+    TLS.get_or_init(|| {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let dir = std::env::temp_dir().join(format!("ltr-web-cert-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+        fs::write(&cert_path, cert.cert.pem()).unwrap();
+        fs::write(&key_path, cert.signing_key.serialize_pem()).unwrap();
+        let tls = transport::load_server_tls(&cert_path, &key_path, None).unwrap();
+        let _ = fs::remove_dir_all(dir);
+        tls
+    })
+    .clone()
+}
+
 async fn spawn_server(secret: Option<&str>) -> Result<ServerGuard> {
     wait_for_control_port_closed().await?;
-    let task = tokio::spawn(Server::new(1024..=65535, secret).listen());
+    let config_dir = std::env::temp_dir().join(format!("ltr-web-config-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&config_dir)?;
+    let old_config_dir = env::var_os("XDG_CONFIG_HOME");
+    env::set_var("XDG_CONFIG_HOME", &config_dir);
+    let mut server = Server::new(1024..=65535, secret);
+    server.set_tls(server_tls());
+    let task = tokio::spawn(server.listen());
 
     for _ in 0..250 {
         if task.is_finished() {
@@ -69,7 +103,13 @@ async fn spawn_server(secret: Option<&str>) -> Result<ServerGuard> {
         }
 
         match TcpStream::connect(("localhost", CONTROL_PORT)).await {
-            Ok(_) => return Ok(ServerGuard { task }),
+            Ok(_) => {
+                return Ok(ServerGuard {
+                    task,
+                    config_dir,
+                    old_config_dir,
+                });
+            }
             Err(_) => time::sleep(Duration::from_millis(10)).await,
         }
     }
@@ -186,6 +226,81 @@ async fn remote_api_requires_bearer_token() {
 }
 
 #[tokio::test]
+async fn local_api_rejects_non_loopback_host_and_origin() {
+    let app = router(WebState::default());
+    let request = |host: &str, origin: Option<&str>| {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/api/tunnels")
+            .header("content-type", "application/json")
+            .header("host", host);
+        if let Some(origin) = origin {
+            builder = builder.header("origin", origin);
+        }
+        let local_port = if host.starts_with("127.") {
+            22
+        } else if host.starts_with("localhost") {
+            23
+        } else {
+            24
+        };
+        builder
+            .body(Body::from(
+                json!({
+                    "name": "dev",
+                    "local_port": local_port,
+                    "to": "attacker.example",
+                    "port": null,
+                    "local_host": "127.0.0.1",
+                    "secret": null
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+
+    let rebinding = app
+        .clone()
+        .oneshot(request("attacker.example:7836", None))
+        .await
+        .expect("request should succeed");
+    assert_eq!(rebinding.status(), StatusCode::FORBIDDEN);
+
+    let evil_origin_scheme = app
+        .clone()
+        .oneshot(request(
+            "localhost:7836",
+            Some("javascript://localhost:7836"),
+        ))
+        .await
+        .expect("request should succeed");
+    assert_eq!(evil_origin_scheme.status(), StatusCode::FORBIDDEN);
+
+    let malformed_origin = app
+        .clone()
+        .oneshot(request("localhost:7836", Some("not-an-origin")))
+        .await
+        .expect("request should succeed");
+    assert_eq!(malformed_origin.status(), StatusCode::FORBIDDEN);
+
+    let cross_site = app
+        .clone()
+        .oneshot(request("localhost:7836", Some("https://attacker.example")))
+        .await
+        .expect("request should succeed");
+    assert_eq!(cross_site.status(), StatusCode::FORBIDDEN);
+
+    for host in ["127.0.0.1:7836", "localhost:7836", "[::1]:7836"] {
+        let response = app
+            .clone()
+            .oneshot(request(host, Some("http://localhost:7836")))
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::CREATED, "host {host}");
+    }
+}
+
+#[tokio::test]
 async fn index_and_assets_use_revalidation_caching() {
     let app = router(WebState::default());
 
@@ -198,6 +313,13 @@ async fn index_and_assets_use_revalidation_caching() {
     assert_eq!(
         response.headers().get(header::CACHE_CONTROL).unwrap(),
         "no-store"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap(),
+        "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     );
 
     let response = app
